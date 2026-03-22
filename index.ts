@@ -148,12 +148,19 @@ export function tonalOklchToResult(color: TonalOklch): TonalOklchResult {
   const gf = Math.max(0, Math.min(1, rawRgb.g));
   const bf = Math.max(0, Math.min(1, rawRgb.b));
 
-  // Quantise to 8-bit, then nudge to minimise luminance drift
+  // Quantise to 8-bit, then nudge to minimise luminance drift.
+  // Skip nudge for achromatic colors to keep R=G=B exact.
   const r8 = Math.round(rf * 255);
   const g8 = Math.round(gf * 255);
   const b8 = Math.round(bf * 255);
   const targetY = cieLstarToY(tone);
-  const [nr, ng, nb] = nudgeToTargetY(r8, g8, b8, targetY);
+
+  let nr: number, ng: number, nb: number;
+  if (color.chroma === 0) {
+    nr = r8; ng = g8; nb = b8;
+  } else {
+    [nr, ng, nb] = nudgeToTargetY(r8, g8, b8, targetY);
+  }
 
   return {
     rgb: { r: rf, g: gf, b: bf },
