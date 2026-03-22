@@ -1,0 +1,54 @@
+{
+  "name": "tonal-oklch",
+  "version": "0.1.0",
+  "description": "A hybrid color space pairing OKLCh perceptual hue & chroma with CIE L* guaranteed WCAG contrast. Colors at the same tone always have identical contrast ratios.",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "color",
+    "oklch",
+    "wcag",
+    "contrast",
+    "accessibility",
+    "a11y",
+    "tonal",
+    "gamut-mapping",
+    "design-tokens",
+    "color-space"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "author": "",
+  "dependencies": {
+    "culori": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/culori": "^4.0.1",
+    "tsup": "^8.0.0",
+    "typescript": "^5.0.0"
+  }
+}
