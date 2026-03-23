@@ -162,11 +162,17 @@ export function tonalOklchToResult(color: TonalOklch): TonalOklchResult {
     [nr, ng, nb] = nudgeToTargetY(r8, g8, b8, targetY);
   }
 
+  const hex = `#${toHex(nr)}${toHex(ng)}${toHex(nb)}`;
+
+  // Derive OKLCh from the final 8-bit RGB so the coordinates match
+  // what culori (or any other tool) would report for this hex value.
+  const finalOklch = toOklch({ mode: 'rgb', r: nr / 255, g: ng / 255, b: nb / 255 });
+
   return {
     rgb: { r: rf, g: gf, b: bf },
     rgb8: { r: nr, g: ng, b: nb },
-    hex: `#${toHex(nr)}${toHex(ng)}${toHex(nb)}`,
-    oklch,
+    hex,
+    oklch: { l: finalOklch.l, c: finalOklch.c ?? 0, h: finalOklch.h ?? 0 },
     tone,
   };
 }
