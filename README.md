@@ -1,5 +1,7 @@
 # tonal-oklch
 
+[![npm](https://img.shields.io/npm/v/tonal-oklch)](https://www.npmjs.com/package/tonal-oklch)
+
 A hybrid color space pairing **OKLCh's** perceptual hue & chroma with **CIE L\*'s** guaranteed WCAG contrast.
 
 Colors at the same **tone** are guaranteed to have identical WCAG contrast ratios against any background — regardless of hue or chroma.
