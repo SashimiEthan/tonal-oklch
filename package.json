@@ -45,6 +45,7 @@
     "color-systems"
   ],
   "license": "MIT",
+  "homepage": "https://www.tonal-oklch.com",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/SashimiEthan/tonal-oklch.git"
