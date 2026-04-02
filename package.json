@@ -29,16 +29,20 @@
     "prepublishOnly": "npm run build"
   },
   "keywords": [
+    "color-space",
+    "color-science",
     "color",
+    "perceptual",
     "oklch",
+    "hct",
+    "tonal",
     "wcag",
-    "contrast",
     "accessibility",
     "a11y",
-    "tonal",
+    "contrast-ratio",
     "gamut-mapping",
-    "design-tokens",
-    "color-space"
+    "design-systems",
+    "color-systems"
   ],
   "license": "MIT",
   "repository": {
