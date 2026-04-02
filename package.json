@@ -1,6 +1,6 @@
 {
   "name": "tonal-oklch",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A hybrid color space pairing OKLCh perceptual hue & chroma with CIE L* guaranteed WCAG contrast. Colors at the same tone always have identical contrast ratios.",
   "type": "module",
   "main": "./dist/index.cjs",
