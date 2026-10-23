@@ -9,9 +9,29 @@
  *   const rgb = tonalOklchToRgb({ tone: 65, chroma: 0.15, hue: 264 });
  */
 
-import { cieLstarToY, yToCieLstar, wcagLuminance, linearize, isDisplayable } from './luminance';
-import { oklchToRgb, rgbToOklch } from './oklab';
+import { cieLstarToY, yToCieLstar, wcagLuminance, linearize, delinearize, isDisplayable } from './luminance';
+import { oklchToRgb, oklchToLrgb, rgbToOklch, type Lrgb } from './oklab';
 import { findLForTargetY, gamutMapWithTonePreservation } from './solve';
+
+// ── Exact-tone float output ───────────────────────────────
+
+/**
+ * Bring out-of-range linear RGB channels into [0, 1] by sliding the color
+ * toward the gray of luminance Y. Every point on that line has luminance Y,
+ * so the tone survives where plain clamping would raise it (by up to 0.07
+ * for dark, high-chroma colors mapped to the gamut tolerance).
+ */
+function pullTowardGray({ r, g, b }: Lrgb, Y: number): Lrgb {
+  let s = 1;
+  for (const v of [r, g, b]) {
+    if (v < 0) s = Math.min(s, Y / (Y - v));
+    else if (v > 1) s = Math.min(s, (1 - Y) / (v - Y));
+  }
+  if (s === 1) return { r, g, b };
+
+  const pull = (v: number) => Math.max(0, Math.min(1, Y + s * (v - Y)));
+  return { r: pull(r), g: pull(g), b: pull(b) };
+}
 
 // ── Post-quantization nudge ───────────────────────────────
 
@@ -70,7 +90,7 @@ export interface SrgbColor {
 
 /** Full result of a tonal OKLCh conversion. */
 export interface TonalOklchResult {
-  /** The sRGB color (channels 0–1, clamped to gamut). */
+  /** The sRGB color (channels 0–1), gamut-mapped at the exact tone. */
   rgb: SrgbColor;
   /** The 8-bit sRGB color, nudged ±1 per channel to best match target luminance. */
   rgb8: { r: number; g: number; b: number };
@@ -134,19 +154,20 @@ export function tonalOklchToResult(color: TonalOklch): TonalOklchResult {
   };
 
   const oklch = tonalOklchToOklch(color);
-  const rawRgb = oklchToRgb(oklch);
+  const linear = oklchToLrgb(oklch);
+  const targetY = cieLstarToY(tone);
 
-  // Clamp float values
-  const rf = Math.max(0, Math.min(1, rawRgb.r));
-  const gf = Math.max(0, Math.min(1, rawRgb.g));
-  const bf = Math.max(0, Math.min(1, rawRgb.b));
+  const exact = pullTowardGray(linear, targetY);
+  const rgb = { r: delinearize(exact.r), g: delinearize(exact.g), b: delinearize(exact.b) };
 
-  // Quantise to 8-bit, then nudge to minimise luminance drift.
+  // 8-bit path: clamp, quantise, then nudge to minimise luminance drift.
   // Skip nudge for achromatic colors to keep R=G=B exact.
+  const rf = Math.max(0, Math.min(1, delinearize(linear.r)));
+  const gf = Math.max(0, Math.min(1, delinearize(linear.g)));
+  const bf = Math.max(0, Math.min(1, delinearize(linear.b)));
   const r8 = Math.round(rf * 255);
   const g8 = Math.round(gf * 255);
   const b8 = Math.round(bf * 255);
-  const targetY = cieLstarToY(tone);
 
   let nr: number, ng: number, nb: number;
   if (color.chroma === 0) {
@@ -162,7 +183,7 @@ export function tonalOklchToResult(color: TonalOklch): TonalOklchResult {
   const finalOklch = rgbToOklch(nr / 255, ng / 255, nb / 255);
 
   return {
-    rgb: { r: rf, g: gf, b: bf },
+    rgb,
     rgb8: { r: nr, g: ng, b: nb },
     hex,
     oklch: finalOklch,

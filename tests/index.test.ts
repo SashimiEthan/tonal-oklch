@@ -64,6 +64,34 @@ describe('tone preservation', () => {
     }
   });
 
+  it('float RGB holds the exact tone for gamut-mapped colors', () => {
+    const tones = [0.5, 1, 2, 3, 5, 10, 20, 30, 50, 70, 90, 97, 99, 99.5];
+    let maxYErr = 0;
+    let minChannel = Infinity;
+    let maxChannel = -Infinity;
+
+    for (const tone of tones) {
+      for (let ci = 0; ci <= 8; ci++) {
+        for (let hue = 0; hue < 360; hue += 10) {
+          const { r, g, b } = tonalOklchToResult({ tone, chroma: ci / 20, hue }).rgb;
+          minChannel = Math.min(minChannel, r, g, b);
+          maxChannel = Math.max(maxChannel, r, g, b);
+          maxYErr = Math.max(maxYErr, Math.abs(wcagLuminance(r, g, b) - cieLstarToY(tone)));
+        }
+      }
+    }
+
+    expect(minChannel).toBeGreaterThanOrEqual(0);
+    expect(maxChannel).toBeLessThanOrEqual(1);
+    expect(maxYErr).toBeLessThanOrEqual(1e-9);
+  });
+
+  it('keeps the 8-bit output while fixing the float for a dark mapped color', () => {
+    const result = tonalOklchToResult({ tone: 5, chroma: 0.2, hue: 264 });
+    expect(result.hex).toBe('#01004e');
+    expect(yToCieLstar(wcagLuminance(result.rgb.r, result.rgb.g, result.rgb.b))).toBeCloseTo(5, 9);
+  });
+
   it('8-bit RGB is within ±0.01 of target Y (post-nudge)', () => {
     for (let hue = 0; hue < 360; hue += 30) {
       const result = tonalOklchToResult({ tone: 50, chroma: 0.15, hue });
