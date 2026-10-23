@@ -9,16 +9,9 @@
  *   const rgb = tonalOklchToRgb({ tone: 65, chroma: 0.15, hue: 264 });
  */
 
-import { useMode, modeOklch, modeRgb, converter } from 'culori/fn';
 import { cieLstarToY, yToCieLstar, wcagLuminance, linearize, isDisplayable } from './luminance';
+import { oklchToRgb, rgbToOklch } from './oklab';
 import { findLForTargetY, gamutMapWithTonePreservation } from './solve';
-
-// Ensure modes are registered (idempotent)
-useMode(modeOklch);
-useMode(modeRgb);
-
-const toRgb = converter('rgb');
-const toOklch = converter('oklch');
 
 // ── Post-quantization nudge ───────────────────────────────
 
@@ -112,7 +105,7 @@ export function tonalOklchToOklch(color: TonalOklch): { l: number; c: number; h:
   const L = findLForTargetY(targetY, chroma, hue);
 
   // Check if the full-chroma color is in sRGB gamut
-  const rgb = toRgb({ mode: 'oklch', l: L, c: chroma, h: hue });
+  const rgb = oklchToRgb({ l: L, c: chroma, h: hue });
   if (isDisplayable(rgb.r, rgb.g, rgb.b)) {
     return { l: L, c: chroma, h: hue };
   }
@@ -141,7 +134,7 @@ export function tonalOklchToResult(color: TonalOklch): TonalOklchResult {
   };
 
   const oklch = tonalOklchToOklch(color);
-  const rawRgb = toRgb({ mode: 'oklch', ...oklch });
+  const rawRgb = oklchToRgb(oklch);
 
   // Clamp float values
   const rf = Math.max(0, Math.min(1, rawRgb.r));
@@ -166,13 +159,13 @@ export function tonalOklchToResult(color: TonalOklch): TonalOklchResult {
 
   // Derive OKLCh from the final 8-bit RGB so the coordinates match
   // what culori (or any other tool) would report for this hex value.
-  const finalOklch = toOklch({ mode: 'rgb', r: nr / 255, g: ng / 255, b: nb / 255 });
+  const finalOklch = rgbToOklch(nr / 255, ng / 255, nb / 255);
 
   return {
     rgb: { r: rf, g: gf, b: bf },
     rgb8: { r: nr, g: ng, b: nb },
     hex,
-    oklch: { l: finalOklch.l, c: finalOklch.c ?? 0, h: finalOklch.h ?? 0 },
+    oklch: finalOklch,
     tone,
   };
 }
@@ -191,16 +184,16 @@ export function tonalOklchToRgb(color: TonalOklch): SrgbColor {
 
 /** Convert sRGB values to Tonal OKLCh. */
 export function rgbToTonalOklch(r: number, g: number, b: number): TonalOklch {
-  const oklch = toOklch({ mode: 'rgb', r, g, b });
+  const oklch = rgbToOklch(r, g, b);
   const Y = wcagLuminance(r, g, b);
   return {
     tone: yToCieLstar(Y),
-    chroma: oklch.c ?? 0,
-    hue: oklch.h ?? 0,
+    chroma: oklch.c,
+    hue: oklch.h,
   };
 }
 
 // ── Re-exports ────────────────────────────────────────────
 
-export { cieLstarToY, yToCieLstar, wcagLuminance, wcagContrast, linearize, isDisplayable } from './luminance';
+export { cieLstarToY, yToCieLstar, wcagLuminance, wcagContrast, linearize, delinearize, isDisplayable } from './luminance';
 export { findLForTargetY, gamutMapWithTonePreservation } from './solve';

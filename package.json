@@ -51,11 +51,7 @@
     "url": "git+https://github.com/SashimiEthan/tonal-oklch.git"
   },
   "author": "",
-  "dependencies": {
-    "culori": "^4.0.0"
-  },
   "devDependencies": {
-    "@types/culori": "^4.0.1",
     "tsup": "^8.0.0",
     "typescript": "^5.0.0",
     "vitest": "^4.1.0"

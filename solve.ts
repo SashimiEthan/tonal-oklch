@@ -7,23 +7,15 @@
  * so tone is never "stale" — unlike Chromator's sequential approach.
  */
 
-import { useMode, modeOklch, modeRgb, modeLrgb, converter } from 'culori/fn';
 import { isDisplayable } from './luminance';
-import { M_AB, LMS2RGB } from './oklab';
-
-// Register the culori modes we need
-useMode(modeOklch);
-useMode(modeRgb);
-useMode(modeLrgb);
-
-const toLrgb = converter('lrgb');
+import { M_AB, LMS2RGB, oklchToLrgb } from './oklab';
 
 // ── Internal helpers ──────────────────────────────────────
 
 /** Check if an OKLCh color is within the sRGB gamut (checked in linear RGB). */
 function inGamut(L: number, C: number, h: number): boolean {
-  const lrgb = toLrgb({ mode: 'oklch', l: L, c: C, h });
-  return isDisplayable(lrgb.r, lrgb.g, lrgb.b);
+  const { r, g, b } = oklchToLrgb({ l: L, c: C, h });
+  return isDisplayable(r, g, b);
 }
 
 // ── Core solver: find OKLCh L for a target CIE Y ─────────

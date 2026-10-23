@@ -10,6 +10,18 @@ export function linearize(c: number): number {
   return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 }
 
+/**
+ * Gamma-encode a single linear sRGB channel. Mirrored around zero and
+ * unclamped, as in CSS Color 4, so out-of-gamut values stay out of range.
+ */
+export function delinearize(c: number): number {
+  const abs = Math.abs(c);
+  if (abs > 0.0031308) {
+    return (Math.sign(c) || 1) * (1.055 * Math.pow(abs, 1 / 2.4) - 0.055);
+  }
+  return c * 12.92;
+}
+
 // ── WCAG relative luminance ───────────────────────────────
 
 /** WCAG 2.1 relative luminance from sRGB 0–1 values. */

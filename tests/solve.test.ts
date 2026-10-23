@@ -1,16 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { useMode, modeOklch, modeOklab, modeLrgb, converter } from 'culori/fn';
 import { findLForTargetY, gamutMapWithTonePreservation } from '../solve';
 import { cieLstarToY } from '../luminance';
-
-useMode(modeOklch);
-useMode(modeOklab);
-useMode(modeLrgb);
-const toOklab = converter('oklab');
-const toLrgb = converter('lrgb');
+import { oklchToLrgb } from '../oklab';
 
 function luminanceOf(L: number, C: number, h: number): number {
-  const { r, g, b } = toLrgb(toOklab({ mode: 'oklch', l: L, c: C, h }));
+  const { r, g, b } = oklchToLrgb({ l: L, c: C, h });
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
