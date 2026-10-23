@@ -62,8 +62,9 @@ export function findLForTargetY(
   maxIter = 25,
 ): number {
   const rad = (hue / 180) * Math.PI;
-  const a = chroma * Math.cos(rad);
-  const b = chroma * Math.sin(rad);
+  // Guarded like oklab.ts so chroma 0 with an undefined hue stays achromatic.
+  const a = chroma ? chroma * Math.cos(rad) : 0;
+  const b = chroma ? chroma * Math.sin(rad) : 0;
 
   let A3 = 0, A2 = 0, A1 = 0, A0 = 0;
   for (let i = 0; i < 3; i++) {

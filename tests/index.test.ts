@@ -33,6 +33,11 @@ describe('edge cases', () => {
     }
   });
 
+  it('chroma 0 tolerates a missing hue, as 0.1.x did', () => {
+    const input = { tone: 49.83, chroma: 0 } as unknown as Parameters<typeof tonalOklchToResult>[0];
+    expect(tonalOklchToResult(input).hex).toBe('#767676');
+  });
+
   it('negative tone clamps to black', () => {
     const result = tonalOklchToResult({ tone: -10, chroma: 0.1, hue: 100 });
     expect(result.hex).toBe('#000000');
