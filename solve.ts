@@ -1,14 +1,15 @@
 /**
- * Binary search solvers for the hybrid OKLCh + CIE L* color space.
+ * Solvers for the hybrid OKLCh + CIE L* color space.
  *
  * Core idea: CIE Y (≡ WCAG relative luminance) is the immutable constraint.
- * OKLCh L is searched via bisection to hit a target Y at any (C, h).
+ * At fixed (C, h), Y is a cubic in OKLCh L, so L is solved in closed form.
  * Gamut mapping reduces chroma while re-solving L at every step,
  * so tone is never "stale" — unlike Chromator's sequential approach.
  */
 
 import { useMode, modeOklch, modeRgb, modeLrgb, converter } from 'culori/fn';
 import { isDisplayable } from './luminance';
+import { M_AB, LMS2RGB } from './oklab';
 
 // Register the culori modes we need
 useMode(modeOklch);
@@ -17,24 +18,7 @@ useMode(modeLrgb);
 
 const toLrgb = converter('lrgb');
 
-// ── Toe function for initial L estimate ───────────────────
-
-const TOE_K1 = 0.173;
-const TOE_K2 = 0.004;
-const TOE_K3 = (1 + TOE_K1) / (1 + TOE_K2);
-
-/** Inverse toe: map Lr (approx CIE Lstar / 100) to OKLCh L. Used to seed the bisection. */
-function toeInv(Lr: number): number {
-  return (Lr * Lr + TOE_K1 * Lr) / (TOE_K3 * (Lr + TOE_K2));
-}
-
 // ── Internal helpers ──────────────────────────────────────
-
-/** Compute WCAG luminance (CIE Y) for an OKLCh color via linear RGB (no gamma round-trip). */
-function getY(L: number, C: number, h: number): number {
-  const lrgb = toLrgb({ mode: 'oklch', l: L, c: C, h });
-  return 0.2126 * lrgb.r + 0.7152 * lrgb.g + 0.0722 * lrgb.b;
-}
 
 /** Check if an OKLCh color is within the sRGB gamut (checked in linear RGB). */
 function inGamut(L: number, C: number, h: number): boolean {
@@ -44,13 +28,40 @@ function inGamut(L: number, C: number, h: number): boolean {
 
 // ── Core solver: find OKLCh L for a target CIE Y ─────────
 
+/** Luminance weight of each cubed cone response: Y = Σ W[i]·LMS[i]. */
+const W = [0, 1, 2].map(
+  (i) => 0.2126 * LMS2RGB[0][i] + 0.7152 * LMS2RGB[1][i] + 0.0722 * LMS2RGB[2][i],
+);
+
+/** Largest real root of t³ + B·t² + C·t + D = 0. */
+function largestRealRoot(B: number, C: number, D: number): number {
+  const p = C - (B * B) / 3;
+  const q = (2 * B ** 3) / 27 - (B * C) / 3 + D;
+  const shift = -B / 3;
+  const disc = (q * q) / 4 + p ** 3 / 27;
+
+  if (disc > 0) {
+    const s = Math.sqrt(disc);
+    // Cube-root only the larger-magnitude term and derive the other from it;
+    // adding both cube roots cancels and drifts ~1e-7 at light tones.
+    const u = Math.cbrt(q < 0 ? -q / 2 + s : -q / 2 - s);
+    return u - p / (3 * u) + shift;
+  }
+
+  if (p === 0) return Math.cbrt(-q) + shift;
+
+  const r = 2 * Math.sqrt(-p / 3);
+  const phi = Math.acos(Math.max(-1, Math.min(1, ((3 * q) / (2 * p)) * Math.sqrt(-3 / p)))) / 3;
+  return r * Math.cos(phi) + shift;
+}
+
 /**
- * Binary search for the OKLCh L that produces a target CIE Y
- * at given chroma and hue. Converges because Y(L) is monotonically
- * increasing for fixed (C, h).
+ * Solve for the OKLCh L that produces a target CIE Y at given chroma
+ * and hue. Each cone response is (L + o)³ with o fixed by (C, h), so
+ * Y = Σ W·(L + o)³ is a cubic in L. Returns the largest real root,
+ * clamped to [0, 1].
  *
- * Uses the toe function to seed a narrow initial bracket,
- * converging in ~20 iterations instead of 30.
+ * @param maxIter Ignored. Kept so existing callers keep compiling.
  */
 export function findLForTargetY(
   targetY: number,
@@ -58,32 +69,31 @@ export function findLForTargetY(
   hue: number,
   maxIter = 25,
 ): number {
-  // Seed bracket using toe inverse: Lr ≈ tone/100, L ≈ toeInv(Lr)
-  const est = toeInv(Math.cbrt(targetY) * 1.16 - 0.16);
-  let lo = Math.max(0, est - 0.06);
-  let hi = Math.min(1, est + 0.06);
+  const rad = (hue / 180) * Math.PI;
+  const a = chroma * Math.cos(rad);
+  const b = chroma * Math.sin(rad);
 
-  // Widen bracket if it doesn't contain the target
-  if (getY(lo, chroma, hue) > targetY) lo = 0;
-  if (getY(hi, chroma, hue) < targetY) hi = 1;
-
-  for (let i = 0; i < maxIter; i++) {
-    const mid = (lo + hi) / 2;
-    if (getY(mid, chroma, hue) < targetY) lo = mid;
-    else hi = mid;
+  let A3 = 0, A2 = 0, A1 = 0, A0 = 0;
+  for (let i = 0; i < 3; i++) {
+    const o = M_AB[i][0] * a + M_AB[i][1] * b;
+    A3 += W[i];
+    A2 += 3 * W[i] * o;
+    A1 += 3 * W[i] * o * o;
+    A0 += W[i] * o ** 3;
   }
 
-  return (lo + hi) / 2;
+  const L = largestRealRoot(A2 / A3, A1 / A3, (A0 - targetY) / A3);
+  return Math.min(1, Math.max(0, L));
 }
 
 // ── Gamut mapping with tone preservation ──────────────────
 
 /**
  * Find the maximum OKLCh chroma that fits in sRGB while hitting
- * a target CIE Y exactly. Binary search on chroma; inner loop
- * re-solves L for the target Y at each candidate chroma.
+ * a target CIE Y exactly. Binary search on chroma; each step
+ * re-solves L for the target Y at the candidate chroma.
  *
- * Worst case: ~25 outer × ~20 inner = ~500 oklch→rgb conversions ≈ 30μs.
+ * Worst case: ~25 steps, one solve and one oklch→rgb conversion each.
  */
 export function gamutMapWithTonePreservation(
   targetY: number,

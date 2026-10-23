@@ -1,8 +1,59 @@
 import { describe, it, expect } from 'vitest';
+import { useMode, modeOklch, modeOklab, modeLrgb, converter } from 'culori/fn';
 import { findLForTargetY, gamutMapWithTonePreservation } from '../solve';
 import { cieLstarToY } from '../luminance';
 
+useMode(modeOklch);
+useMode(modeOklab);
+useMode(modeLrgb);
+const toOklab = converter('oklab');
+const toLrgb = converter('lrgb');
+
+function luminanceOf(L: number, C: number, h: number): number {
+  const { r, g, b } = toLrgb(toOklab({ mode: 'oklch', l: L, c: C, h }));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
 describe('findLForTargetY', () => {
+  it('round-trips to the target Y wherever the root is inside (0, 1)', () => {
+    const tones = [0.01, 0.1, 0.5, ...Array.from({ length: 99 }, (_, i) => i + 1)];
+    let maxErr = 0;
+    let minL = Infinity;
+    let maxL = -Infinity;
+    let inside = 0;
+    let total = 0;
+
+    for (const tone of tones) {
+      const targetY = cieLstarToY(tone);
+      for (let ci = 0; ci <= 20; ci++) {
+        const chroma = ci / 50;
+        for (let hue = 0; hue < 360; hue += 5) {
+          const L = findLForTargetY(targetY, chroma, hue);
+          total++;
+          minL = Math.min(minL, L);
+          maxL = Math.max(maxL, L);
+          if (L > 0 && L < 1) {
+            inside++;
+            maxErr = Math.max(maxErr, Math.abs(luminanceOf(L, chroma, hue) - targetY));
+          }
+        }
+      }
+    }
+
+    expect(minL).toBeGreaterThanOrEqual(0);
+    expect(maxL).toBeLessThanOrEqual(1);
+    expect(inside).toBeGreaterThan(total * 0.95);
+    expect(maxErr).toBeLessThanOrEqual(1e-12);
+  });
+
+  it('returns known roots', () => {
+    expect(findLForTargetY(cieLstarToY(50), 0.1, 264)).toBeCloseTo(0.5711138, 7);
+    // Impossible inputs: the cubic has three real roots; the largest is returned.
+    expect(findLForTargetY(cieLstarToY(3), 0.4, 65)).toBeCloseTo(0.1702, 4);
+    // Raw root is negative (−0.304); clamped.
+    expect(findLForTargetY(cieLstarToY(1), 0.4, 99)).toBe(0);
+  });
+
   it('returns small L for small Y', () => {
     const L = findLForTargetY(0.001, 0, 0);
     expect(L).toBeGreaterThan(0);

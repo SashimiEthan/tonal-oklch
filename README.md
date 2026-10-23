@@ -52,13 +52,13 @@ Reverse conversion from sRGB (channels 0–1) to Tonal OKLCh.
 
 - `cieLstarToY` / `yToCieLstar` — CIE L\* ↔ Y conversions
 - `wcagLuminance` / `wcagContrast` — WCAG 2.1 utilities
-- `findLForTargetY` — binary search solver for OKLCh L
+- `findLForTargetY` — closed-form cubic solver for OKLCh L
 - `gamutMapWithTonePreservation` — chroma reduction with exact tone
 
 ## How it works
 
 1. **Tone → Y**: CIE L\* is converted to CIE Y (≡ WCAG relative luminance)
-2. **Solve L**: Binary search finds the OKLCh lightness that produces the target Y at the given chroma & hue
+2. **Solve L**: At fixed chroma & hue, Y is a cubic in OKLCh lightness, so the cubic formula gives the lightness that produces the target Y directly
 3. **Gamut map**: If the color is outside sRGB, chroma is reduced while re-solving L at every step — tone is never stale
 4. **Nudge**: 8-bit quantization is refined by ±1 per channel to minimize luminance drift
 
