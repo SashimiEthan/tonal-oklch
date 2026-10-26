@@ -5,7 +5,7 @@
  * regardless of hue or chroma.
  *
  * @example
- *   import { tonalOklchToRgb } from './src/tonal-oklch';
+ *   import { tonalOklchToRgb } from 'tonal-oklch';
  *   const rgb = tonalOklchToRgb({ tone: 65, chroma: 0.15, hue: 264 });
  */
 
@@ -102,7 +102,7 @@ export interface TonalOklchResult {
   rgb8: { r: number; g: number; b: number };
   /** The hex string for `rgb8`. */
   hex: string;
-  /** The gamut-mapped OKLCh coordinates actually used. */
+  /** The OKLCh coordinates read back from `rgb8`, so they match what any converter reports for `hex`. */
   oklch: { l: number; c: number; h: number };
   /** The input tone, preserved exactly after gamut mapping. */
   tone: number;

@@ -19,15 +19,15 @@ import { tonalOklchToResult, tonalOklchToRgb, rgbToTonalOklch } from 'tonal-oklc
 
 // Convert a Tonal OKLCh color → sRGB
 const result = tonalOklchToResult({ tone: 65, chroma: 0.15, hue: 264 });
-console.log(result.hex);    // e.g. "#8b7cc8"
+console.log(result.hex);    // "#6e9cfb"
 console.log(result.tone);   // 65 (preserved exactly)
 
 // Quick conversion (returns { r, g, b } in 0–1)
 const rgb = tonalOklchToRgb({ tone: 65, chroma: 0.15, hue: 264 });
 
 // Reverse: sRGB → Tonal OKLCh
-const tonal = rgbToTonalOklch(0.55, 0.49, 0.78);
-console.log(tonal.tone);    // CIE L* lightness
+const tonal = rgbToTonalOklch(0.43, 0.61, 0.98);
+console.log(tonal.tone);    // CIE L* lightness, ≈ 65
 ```
 
 ## API
