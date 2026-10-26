@@ -50,9 +50,10 @@ const LMS2LAB: ReadonlyArray<readonly [number, number, number]> = [
 
 // ── OKLCh → sRGB ──────────────────────────────────────────
 
-/** Chroma and hue → Oklab a, b. A missing hue counts as 0, as CSS does for `none`. */
+/** Chroma and hue → Oklab a, b. A missing, NaN or infinite hue counts as 0, as CSS Color 4 does. */
 export function chromaHueToAb(c: number, h: number | undefined): [a: number, b: number] {
-  const rad = ((h ?? 0) / 180) * Math.PI;
+  const deg = typeof h === 'number' && Number.isFinite(h) ? h : 0;
+  const rad = (deg / 180) * Math.PI;
   return [c * Math.cos(rad), c * Math.sin(rad)];
 }
 

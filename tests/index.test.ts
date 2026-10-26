@@ -52,6 +52,16 @@ describe('edge cases', () => {
     expect(tonalOklchToResult(pink).hex).toBe(tonalOklchToResult({ tone: 50, chroma: 0.1, hue: 0 }).hex);
   });
 
+  it('a NaN or infinite hue counts as 0, as CSS Color 4 does', () => {
+    const base = tonalOklchToResult({ tone: 50, chroma: 0.1, hue: 0 });
+    for (const hue of [NaN, Infinity, -Infinity]) {
+      const result = tonalOklchToResult({ tone: 50, chroma: 0.1, hue });
+      expect(result.hex).toBe(base.hex);
+      expect(result.rgb).toEqual(base.rgb);
+      expect(result.oklch).toEqual(base.oklch);
+    }
+  });
+
   it('negative tone clamps to black', () => {
     const result = tonalOklchToResult({ tone: -10, chroma: 0.1, hue: 100 });
     expect(result.hex).toBe('#000000');

@@ -11,6 +11,10 @@
 
 - The `culori` dependency. Conversions are in-package, using the CSS Color 4 Oklab matrices, and produce identical results. The package has no runtime dependencies.
 
+### Fixed
+
+- A hue of `NaN`, `Infinity` or `-Infinity` now counts as 0, the way CSS Color 4 treats a missing (`none`) or infinite hue, instead of producing `#NaNNaNNaN` with all-NaN `rgb`, `rgb8` and `oklch`.
+
 ### Added
 
 - `delinearize`: gamma-encode a linear sRGB channel (inverse of `linearize` for values of 0 and up; negatives are mirrored, as CSS Color 4 does).
