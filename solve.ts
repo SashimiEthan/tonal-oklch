@@ -8,7 +8,7 @@
  */
 
 import { isDisplayable } from './luminance';
-import { M_AB, LMS2RGB, oklchToLrgb } from './oklab';
+import { M_AB, LMS2RGB, oklchToLrgb, chromaHueToAb } from './oklab';
 
 // ── Internal helpers ──────────────────────────────────────
 
@@ -61,10 +61,7 @@ export function findLForTargetY(
   hue: number,
   maxIter = 25,
 ): number {
-  const rad = (hue / 180) * Math.PI;
-  // Guarded like oklab.ts so chroma 0 with an undefined hue stays achromatic.
-  const a = chroma ? chroma * Math.cos(rad) : 0;
-  const b = chroma ? chroma * Math.sin(rad) : 0;
+  const [a, b] = chromaHueToAb(chroma, hue);
 
   let A3 = 0, A2 = 0, A1 = 0, A0 = 0;
   for (let i = 0; i < 3; i++) {

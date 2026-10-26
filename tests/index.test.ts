@@ -33,9 +33,13 @@ describe('edge cases', () => {
     }
   });
 
-  it('chroma 0 tolerates a missing hue, as 0.1.x did', () => {
-    const input = { tone: 49.83, chroma: 0 } as unknown as Parameters<typeof tonalOklchToResult>[0];
-    expect(tonalOklchToResult(input).hex).toBe('#767676');
+  it('a missing hue counts as 0, as 0.1.x did', () => {
+    type Input = Parameters<typeof tonalOklchToResult>[0];
+    const gray = { tone: 49.83, chroma: 0 } as unknown as Input;
+    expect(tonalOklchToResult(gray).hex).toBe('#767676');
+    const pink = { tone: 50, chroma: 0.1 } as unknown as Input;
+    expect(tonalOklchToResult(pink).hex).toBe('#aa6177');
+    expect(tonalOklchToResult(pink).hex).toBe(tonalOklchToResult({ tone: 50, chroma: 0.1, hue: 0 }).hex);
   });
 
   it('negative tone clamps to black', () => {

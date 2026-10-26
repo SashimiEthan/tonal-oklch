@@ -50,11 +50,15 @@ const LMS2LAB: ReadonlyArray<readonly [number, number, number]> = [
 
 // ── OKLCh → sRGB ──────────────────────────────────────────
 
+/** Chroma and hue → Oklab a, b. A missing hue counts as 0, as CSS does for `none`. */
+export function chromaHueToAb(c: number, h: number | undefined): [a: number, b: number] {
+  const rad = ((h ?? 0) / 180) * Math.PI;
+  return [c * Math.cos(rad), c * Math.sin(rad)];
+}
+
 /** OKLCh → linear sRGB. Out-of-gamut colors come back with channels outside [0, 1]. */
 export function oklchToLrgb({ l, c, h }: Oklch): Lrgb {
-  const rad = (h / 180) * Math.PI;
-  const a = c ? c * Math.cos(rad) : 0;
-  const b = c ? c * Math.sin(rad) : 0;
+  const [a, b] = chromaHueToAb(c, h);
 
   const L = Math.pow(l + M_AB[0][0] * a + M_AB[0][1] * b, 3);
   const M = Math.pow(l + M_AB[1][0] * a + M_AB[1][1] * b, 3);
