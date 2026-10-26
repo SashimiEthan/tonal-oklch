@@ -51,6 +51,16 @@ describe('edge cases', () => {
     const result = tonalOklchToResult({ tone: 110, chroma: 0.1, hue: 100 });
     expect(result.hex).toBe('#ffffff');
   });
+
+  it('float channels at the gamut edge are exactly 1 and 0', () => {
+    const coral = tonalOklchToResult({ tone: 60, chroma: 0.25, hue: 30 });
+    expect(coral.hex).toBe('#fe5642');
+    expect(coral.rgb.r).toBe(1);
+
+    const green = tonalOklchToResult(rgbToTonalOklch(6 / 255, 234 / 255, 0));
+    expect(green.hex).toBe('#06ea00');
+    expect(green.rgb.b).toBe(0);
+  });
 });
 
 // ── Tone preservation ─────────────────────────────────────

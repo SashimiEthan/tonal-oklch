@@ -84,11 +84,16 @@ function normalizeHue(hue: number): number {
   return hue < 0 ? hue + 360 : hue;
 }
 
+/** Mirrored around zero, as CSS Color 4 specifies, so out-of-gamut channels keep their sign and magnitude. */
+function linearizeMirrored(c: number): number {
+  return c < 0 ? -linearize(-c) : linearize(c);
+}
+
 /** Gamma-encoded sRGB → OKLCh. Neutral inputs (r = g = b) give c = 0, h = 0 exactly. */
 export function rgbToOklch(r: number, g: number, b: number): Oklch {
-  const lr = linearize(r);
-  const lg = linearize(g);
-  const lb = linearize(b);
+  const lr = linearizeMirrored(r);
+  const lg = linearizeMirrored(g);
+  const lb = linearizeMirrored(b);
 
   const L = Math.cbrt(RGB2LMS[0][0] * lr + RGB2LMS[0][1] * lg + RGB2LMS[0][2] * lb);
   const M = Math.cbrt(RGB2LMS[1][0] * lr + RGB2LMS[1][1] * lg + RGB2LMS[1][2] * lb);

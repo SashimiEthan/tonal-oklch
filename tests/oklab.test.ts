@@ -48,6 +48,16 @@ describe('sRGB ↔ OKLCh', () => {
     }
     expect(maxErr).toBeLessThan(1e-9);
   });
+
+  it('round-trips out-of-gamut sRGB, mirroring negative channels as CSS Color 4 does', () => {
+    const wide = rgbToOklch(-0.2, 0.3, 0.9);
+    expect(wide.c).toBeCloseTo(0.2509, 4);
+    expect(wide.h).toBeCloseTo(255.88, 2);
+    const back = oklchToRgb(wide);
+    expect(back.r).toBeCloseTo(-0.2, 9);
+    expect(back.g).toBeCloseTo(0.3, 9);
+    expect(back.b).toBeCloseTo(0.9, 9);
+  });
 });
 
 describe('delinearize', () => {

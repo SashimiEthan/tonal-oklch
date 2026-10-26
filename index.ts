@@ -164,7 +164,9 @@ export function tonalOklchToResult(color: TonalOklch): TonalOklchResult {
   const targetY = cieLstarToY(tone);
 
   const exact = pullTowardGray(linear, targetY);
-  const rgb = { r: delinearize(exact.r), g: delinearize(exact.g), b: delinearize(exact.b) };
+  // Snap, not clamp: edge channels must come out as exactly 0 and 1.
+  const gamma = (v: number) => (v >= 1 ? 1 : v <= 0 ? 0 : delinearize(v));
+  const rgb = { r: gamma(exact.r), g: gamma(exact.g), b: gamma(exact.b) };
 
   // 8-bit path: clamp, quantise, then nudge to minimise luminance drift.
   // Skip nudge for achromatic colors to keep R=G=B exact.

@@ -13,5 +13,5 @@
 
 ### Added
 
-- `delinearize`: gamma-encode a linear sRGB channel (inverse of `linearize`).
+- `delinearize`: gamma-encode a linear sRGB channel (inverse of `linearize` for values of 0 and up; negatives are mirrored, as CSS Color 4 does).
 - Golden hex fixture covering 22,185 colors, so future solver changes can prove they leave output unchanged.
