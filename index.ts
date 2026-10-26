@@ -19,7 +19,9 @@ import { findLForTargetY, gamutMapWithTonePreservation } from './solve';
  * Bring out-of-range linear RGB channels into [0, 1] by sliding the color
  * toward the gray of luminance Y. Every point on that line has luminance Y,
  * so the tone survives where plain clamping would raise it (by up to 0.07
- * for dark, high-chroma colors mapped to the gamut tolerance).
+ * for dark, high-chroma colors mapped to the gamut tolerance). Assumes the
+ * input already has luminance Y; below about tone 0.006 or above 99.9995 it
+ * doesn't, and the tone is only approximate.
  */
 function pullTowardGray({ r, g, b }: Lrgb, Y: number): Lrgb {
   let s = 1;
@@ -90,11 +92,15 @@ export interface SrgbColor {
 
 /** Full result of a tonal OKLCh conversion. */
 export interface TonalOklchResult {
-  /** The sRGB color (channels 0–1), gamut-mapped at the exact tone. */
+  /**
+   * The sRGB color (channels 0–1) at the exact tone. Out-of-range channels
+   * are pulled toward gray rather than clipped, so at the gamut edge this can
+   * sit a few 8-bit steps away from `rgb8` and `hex`.
+   */
   rgb: SrgbColor;
-  /** The 8-bit sRGB color, nudged ±1 per channel to best match target luminance. */
+  /** The 8-bit sRGB color: the clipped color rounded, then nudged ±1 per channel to best match target luminance. */
   rgb8: { r: number; g: number; b: number };
-  /** The hex string for the nudged 8-bit color. */
+  /** The hex string for `rgb8`. */
   hex: string;
   /** The gamut-mapped OKLCh coordinates actually used. */
   oklch: { l: number; c: number; h: number };

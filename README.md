@@ -34,7 +34,7 @@ console.log(tonal.tone);    // CIE L* lightness
 
 ### `tonalOklchToResult(color: TonalOklch): TonalOklchResult`
 
-Full conversion with metadata — returns sRGB (float + 8-bit), hex, final OKLCh coordinates, and tone.
+Full conversion with metadata — returns sRGB (float + 8-bit), hex, final OKLCh coordinates, and tone. The float `rgb` holds the exact tone (out-of-range channels are pulled toward gray, not clipped); `rgb8` and `hex` are the clipped color rounded and nudged, so the two can differ by a few 8-bit steps at the gamut edge.
 
 ### `tonalOklchToRgb(color: TonalOklch): SrgbColor`
 

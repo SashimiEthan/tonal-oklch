@@ -97,6 +97,22 @@ describe('tone preservation', () => {
     expect(yToCieLstar(wcagLuminance(result.rgb.r, result.rgb.g, result.rgb.b))).toBeCloseTo(5, 9);
   });
 
+  it('never clamps L between tone 0.01 and 99.9995, where the float tone is exact', () => {
+    let minL = Infinity;
+    let maxL = -Infinity;
+    for (const tone of [0.01, 0.02, 0.05, 0.1, 0.5, 1, 50, 99, 99.9, 99.99, 99.999, 99.9995]) {
+      for (let ci = 1; ci <= 40; ci++) {
+        for (let hue = 0; hue < 360; hue += 2) {
+          const { l } = tonalOklchToOklch({ tone, chroma: ci / 100, hue });
+          minL = Math.min(minL, l);
+          maxL = Math.max(maxL, l);
+        }
+      }
+    }
+    expect(minL).toBeGreaterThan(0);
+    expect(maxL).toBeLessThan(1);
+  });
+
   it('8-bit RGB is within ±0.01 of target Y (post-nudge)', () => {
     for (let hue = 0; hue < 360; hue += 30) {
       const result = tonalOklchToResult({ tone: 50, chroma: 0.15, hue });

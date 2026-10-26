@@ -87,6 +87,8 @@ export function findLForTargetY(
  * re-solves L for the target Y at the candidate chroma.
  *
  * Worst case: ~25 steps, one solve and one oklch→rgb conversion each.
+ *
+ * @param innerIter Ignored. Kept so existing callers keep compiling.
  */
 export function gamutMapWithTonePreservation(
   targetY: number,
