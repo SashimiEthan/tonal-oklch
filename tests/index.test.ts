@@ -115,7 +115,41 @@ describe('tone preservation', () => {
     expect(maxYErr).toBeLessThanOrEqual(1e-9);
   });
 
-  it('keeps the 8-bit output while fixing the float for a dark mapped color', () => {
+  it('rgb8 is rgb rounded, then nudged by at most one step per channel', () => {
+    let maxGap = 0;
+    for (const tone of [0.5, 1, 2, 5, 10, 20, 30, 50, 70, 90, 97, 99.5]) {
+      for (let ci = 0; ci <= 8; ci++) {
+        for (let hue = 0; hue < 360; hue += 10) {
+          const { rgb, rgb8 } = tonalOklchToResult({ tone, chroma: ci / 20, hue });
+          maxGap = Math.max(
+            maxGap,
+            Math.abs(Math.round(rgb.r * 255) - rgb8.r),
+            Math.abs(Math.round(rgb.g * 255) - rgb8.g),
+            Math.abs(Math.round(rgb.b * 255) - rgb8.b),
+          );
+        }
+      }
+    }
+    expect(maxGap).toBeLessThanOrEqual(1);
+  });
+
+  it('near-black hexes are no lighter than their tone beyond 8-bit rounding', () => {
+    expect(tonalOklchToResult({ tone: 0.1, chroma: 0.1, hue: 252 }).hex).toBe('#000005');
+    expect(tonalOklchToResult({ tone: 0.000001, chroma: 0.3, hue: 260 }).hex).toBe('#000000');
+
+    let maxLighter = 0;
+    for (const tone of [0.001, 0.05, 0.1, 0.2, 0.3]) {
+      for (let ci = 1; ci <= 16; ci++) {
+        for (let hue = 0; hue < 360; hue += 12) {
+          const { r, g, b } = tonalOklchToResult({ tone, chroma: ci / 40, hue }).rgb8;
+          maxLighter = Math.max(maxLighter, yToCieLstar(wcagLuminance(r / 255, g / 255, b / 255)) - tone);
+        }
+      }
+    }
+    expect(maxLighter).toBeLessThan(0.04);
+  });
+
+  it('a dark mapped color keeps its hex and has an exact float tone', () => {
     const result = tonalOklchToResult({ tone: 5, chroma: 0.2, hue: 264 });
     expect(result.hex).toBe('#01004e');
     expect(yToCieLstar(wcagLuminance(result.rgb.r, result.rgb.g, result.rgb.b))).toBeCloseTo(5, 9);

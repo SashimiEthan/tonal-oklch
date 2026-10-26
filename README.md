@@ -34,7 +34,7 @@ console.log(tonal.tone);    // CIE L* lightness, ≈ 65
 
 ### `tonalOklchToResult(color: TonalOklch): TonalOklchResult`
 
-Full conversion with metadata — returns sRGB (float + 8-bit), hex, final OKLCh coordinates, and tone. The float `rgb` holds the exact tone (out-of-range channels are pulled toward gray, not clipped); `rgb8` and `hex` are the clipped color rounded and nudged, so the two can differ by a few 8-bit steps at the gamut edge.
+Full conversion with metadata — returns sRGB (float + 8-bit), hex, final OKLCh coordinates, and tone. The float `rgb` holds the exact tone (out-of-range channels are pulled toward gray, not clipped); `rgb8` and `hex` are `rgb` rounded, then nudged by at most one step per channel toward the exact tone.
 
 ### `tonalOklchToRgb(color: TonalOklch): SrgbColor`
 
@@ -60,7 +60,8 @@ Reverse conversion from sRGB (channels 0–1) to Tonal OKLCh.
 1. **Tone → Y**: CIE L\* is converted to CIE Y (≡ WCAG relative luminance)
 2. **Solve L**: At fixed chroma & hue, Y is a cubic in OKLCh lightness, so the cubic formula gives the lightness that produces the target Y directly
 3. **Gamut map**: If the color is outside sRGB, chroma is reduced while re-solving L at every step — tone is never stale
-4. **Nudge**: 8-bit quantization is refined by ±1 per channel to minimize luminance drift
+4. **Pull toward gray**: Channels left a hair out of range by the gamut tolerance are slid toward the gray of the same luminance instead of clipped, so the tone stays exact
+5. **Nudge**: 8-bit quantization is refined by ±1 per channel to minimize luminance drift
 
 ## License
 

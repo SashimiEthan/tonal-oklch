@@ -94,11 +94,10 @@ export interface SrgbColor {
 export interface TonalOklchResult {
   /**
    * The sRGB color (channels 0–1) at the exact tone. Out-of-range channels
-   * are pulled toward gray rather than clipped, so at the gamut edge this can
-   * sit a few 8-bit steps away from `rgb8` and `hex`.
+   * are pulled toward gray rather than clipped.
    */
   rgb: SrgbColor;
-  /** The 8-bit sRGB color: the clipped color rounded, then nudged ±1 per channel to best match target luminance. */
+  /** The 8-bit sRGB color: `rgb` rounded, then nudged ±1 per channel to best match target luminance. */
   rgb8: { r: number; g: number; b: number };
   /** The hex string for `rgb8`. */
   hex: string;
@@ -168,15 +167,15 @@ export function tonalOklchToResult(color: TonalOklch): TonalOklchResult {
   const gamma = (v: number) => (v >= 1 ? 1 : v <= 0 ? 0 : delinearize(v));
   const rgb = { r: gamma(exact.r), g: gamma(exact.g), b: gamma(exact.b) };
 
-  // 8-bit path: clamp, quantise, then nudge to minimise luminance drift.
-  const to8 = (v: number) => Math.round(Math.max(0, Math.min(1, delinearize(v))) * 255);
-
+  // 8-bit path: round rgb, then nudge to minimise luminance drift.
   let nr: number, ng: number, nb: number;
   if (color.chroma === 0) {
     // One rounding for all three channels keeps R=G=B exact, so no nudge.
-    nr = ng = nb = to8(targetY);
+    nr = ng = nb = Math.round(gamma(targetY) * 255);
   } else {
-    [nr, ng, nb] = nudgeToTargetY(to8(linear.r), to8(linear.g), to8(linear.b), targetY);
+    [nr, ng, nb] = nudgeToTargetY(
+      Math.round(rgb.r * 255), Math.round(rgb.g * 255), Math.round(rgb.b * 255), targetY,
+    );
   }
 
   const hex = `#${toHex(nr)}${toHex(ng)}${toHex(nb)}`;
