@@ -33,6 +33,16 @@ describe('edge cases', () => {
     }
   });
 
+  it('float grays halfway between two 8-bit steps round to one neutral value', () => {
+    for (let k = 0; k < 255; k++) {
+      const v = (k + 0.5) / 255;
+      const { rgb8 } = tonalOklchToResult(rgbToTonalOklch(v, v, v));
+      expect(rgb8.g).toBe(rgb8.r);
+      expect(rgb8.b).toBe(rgb8.r);
+      expect([k, k + 1]).toContain(rgb8.r);
+    }
+  });
+
   it('a missing hue counts as 0, as 0.1.x did', () => {
     type Input = Parameters<typeof tonalOklchToResult>[0];
     const gray = { tone: 49.83, chroma: 0 } as unknown as Input;

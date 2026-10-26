@@ -169,19 +169,14 @@ export function tonalOklchToResult(color: TonalOklch): TonalOklchResult {
   const rgb = { r: gamma(exact.r), g: gamma(exact.g), b: gamma(exact.b) };
 
   // 8-bit path: clamp, quantise, then nudge to minimise luminance drift.
-  // Skip nudge for achromatic colors to keep R=G=B exact.
-  const rf = Math.max(0, Math.min(1, delinearize(linear.r)));
-  const gf = Math.max(0, Math.min(1, delinearize(linear.g)));
-  const bf = Math.max(0, Math.min(1, delinearize(linear.b)));
-  const r8 = Math.round(rf * 255);
-  const g8 = Math.round(gf * 255);
-  const b8 = Math.round(bf * 255);
+  const to8 = (v: number) => Math.round(Math.max(0, Math.min(1, delinearize(v))) * 255);
 
   let nr: number, ng: number, nb: number;
   if (color.chroma === 0) {
-    nr = r8; ng = g8; nb = b8;
+    // One rounding for all three channels keeps R=G=B exact, so no nudge.
+    nr = ng = nb = to8(targetY);
   } else {
-    [nr, ng, nb] = nudgeToTargetY(r8, g8, b8, targetY);
+    [nr, ng, nb] = nudgeToTargetY(to8(linear.r), to8(linear.g), to8(linear.b), targetY);
   }
 
   const hex = `#${toHex(nr)}${toHex(ng)}${toHex(nb)}`;
