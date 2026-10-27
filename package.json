@@ -30,6 +30,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "viz": "npm run build && node scripts/viz.mjs",
+    "bench": "npm run build && node scripts/bench.mjs",
+    "build:wasm": "wasm-pack build crates/tonal-oklch-wasm --target web --release",
+    "test:wasm": "npm run build && npm run build:wasm && node crates/tonal-oklch-wasm/tests/parity.mjs",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

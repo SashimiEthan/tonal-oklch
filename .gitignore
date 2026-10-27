@@ -1,5 +1,7 @@
 node_modules/
 dist/
+target/
+crates/tonal-oklch-wasm/pkg/
 *.tgz
 .DS_Store
 viz.html
