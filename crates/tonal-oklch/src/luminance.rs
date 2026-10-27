@@ -62,10 +62,11 @@ pub fn y_to_cie_lstar(y: f64) -> f64 {
 /// Whether RGB channels are within `epsilon` of the displayable [0, 1] range.
 #[inline]
 pub fn is_displayable(r: f64, g: f64, b: f64, epsilon: f64) -> bool {
-    r >= -epsilon
-        && r <= 1.0 + epsilon
-        && g >= -epsilon
-        && g <= 1.0 + epsilon
-        && b >= -epsilon
-        && b <= 1.0 + epsilon
+    // Non-short-circuit `&` keeps this branchless; the result is unpredictable in bisection.
+    (r >= -epsilon)
+        & (r <= 1.0 + epsilon)
+        & (g >= -epsilon)
+        & (g <= 1.0 + epsilon)
+        & (b >= -epsilon)
+        & (b <= 1.0 + epsilon)
 }

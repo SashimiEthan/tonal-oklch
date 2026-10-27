@@ -37,9 +37,13 @@ The same functions are available as methods: `color.to_result()`, `color.to_rgb(
 
 Full conversion with metadata: `rgb` (float sRGB at the exact tone, with out-of-range channels pulled toward gray rather than clipped), `rgb8` (rounded, then nudged by at most one step per channel toward the exact tone), `oklch` (read back from `rgb8`) and `tone`. `result.hex()` and `result.rgb8.hex()` give the lowercase `#rrggbb` string; `Rgb8` also implements `Display`.
 
+### `tonal_oklch_to_rgb8(color: TonalOklch) -> Rgb8`
+
+The nudged 8-bit color alone, without the rest of the result. The cheapest route to a hex string: `tonal_oklch_to_rgb8(color).hex()`.
+
 ### `tonal_oklch_to_rgb(color: TonalOklch) -> Srgb`
 
-Convenience wrapper returning `{ r, g, b }` in 0–1.
+Convenience wrapper returning the nudged 8-bit color as `{ r, g, b }` in 0–1.
 
 ### `tonal_oklch_to_oklch(color: TonalOklch) -> Oklch`
 
@@ -64,9 +68,11 @@ Single thread, on the 22,185-color golden grid (72% of which needs gamut mapping
 
 | | Rust (native) | JS (Node 24) |
 |---|---|---|
-| `tonal_oklch_to_result`, all colors | 1.02 µs/color | 4.49 µs/color |
-| in-gamut colors | 0.21 µs/color | 0.86 µs/color |
-| gamut-mapped colors | 1.32 µs/color | 5.86 µs/color |
+| `tonal_oklch_to_result`, all colors | 0.79 µs/color | 4.54 µs/color |
+| in-gamut colors | 0.13 µs/color | 0.88 µs/color |
+| gamut-mapped colors | 1.01 µs/color | 5.98 µs/color |
+| `tonal_oklch_to_rgb8`, all colors | 0.75 µs/color | — |
+| `tonal_oklch_to_oklch`, all colors | 0.66 µs/color | 3.99 µs/color |
 
 Reproduce with `cargo run --release --example bench` and `npm run bench` from the repository root. The conversions are pure functions, so large palettes parallelize trivially with [rayon](https://crates.io/crates/rayon): `colors.par_iter().map(|&c| tonal_oklch_to_result(c))`.
 

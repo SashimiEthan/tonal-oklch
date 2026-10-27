@@ -19,6 +19,7 @@ mod oklab;
 mod solve;
 
 use std::fmt;
+use std::sync::LazyLock;
 
 pub use luminance::{
     cie_lstar_to_y, delinearize, is_displayable, linearize, wcag_contrast, wcag_luminance,
@@ -28,6 +29,12 @@ pub use oklab::{Lrgb, Oklch, oklch_to_lrgb, oklch_to_rgb, rgb_to_oklch};
 pub use solve::{find_l_for_target_y, gamut_map_with_tone_preservation};
 
 use oklab::lrgb_to_oklch;
+use solve::gamut_map_to_lrgb;
+
+/// `linearize(k / 255)` for every 8-bit `k`. Filled by `linearize` itself on
+/// first use, so it is bit-identical to calling it.
+static LINEAR_8BIT: LazyLock<[f64; 256]> =
+    LazyLock::new(|| std::array::from_fn(|k| linearize(k as f64 / 255.0)));
 
 /// A color in Tonal OKLCh space.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -110,6 +117,11 @@ impl TonalOklch {
         tonal_oklch_to_rgb(self)
     }
 
+    /// See [`tonal_oklch_to_rgb8`].
+    pub fn to_rgb8(self) -> Rgb8 {
+        tonal_oklch_to_rgb8(self)
+    }
+
     /// See [`rgb_to_tonal_oklch`].
     pub fn from_rgb(r: f64, g: f64, b: f64) -> Self {
         rgb_to_tonal_oklch(r, g, b)
@@ -148,34 +160,27 @@ fn pull_toward_gray(Lrgb { r, g, b }: Lrgb, y: f64) -> Lrgb {
 /// difference is imperceptible (< 0.4% per channel) but tightens WCAG
 /// contrast spread from ~0.04 to ~0.01. Also returns the winner's linear RGB.
 fn nudge_to_target_y(r: i32, g: i32, b: i32, target_y: f64) -> (Rgb8, Lrgb) {
-    let lin = |k: i32| linearize(f64::from(k) / 255.0);
-    let lr = [lin(r - 1), lin(r), lin(r + 1)];
-    let lg = [lin(g - 1), lin(g), lin(g + 1)];
-    let lb = [lin(b - 1), lin(b), lin(b + 1)];
-    let y8 = |lr: f64, lg: f64, lb: f64| 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
+    let lut = &*LINEAR_8BIT;
+    let lin = |k: i32| lut[k as usize];
+    let steps = |k: i32| (k - 1).max(0)..=(k + 1).min(255);
 
     let mut best = (r, g, b);
-    let mut best_lin = (lr[1], lg[1], lb[1]);
-    let mut best_err = (y8(lr[1], lg[1], lb[1]) - target_y).abs();
+    let mut best_lin = (lin(r), lin(g), lin(b));
+    let mut best_err =
+        (0.2126 * best_lin.0 + 0.7152 * best_lin.1 + 0.0722 * best_lin.2 - target_y).abs();
 
-    for dr in -1..=1 {
-        for dg in -1..=1 {
-            for db in -1..=1 {
-                let (nr, ng, nb) = (r + dr, g + dg, b + db);
-                if !(0..=255).contains(&nr) || !(0..=255).contains(&ng) || !(0..=255).contains(&nb)
-                {
-                    continue;
-                }
-                let lin = (
-                    lr[(dr + 1) as usize],
-                    lg[(dg + 1) as usize],
-                    lb[(db + 1) as usize],
-                );
-                let err = (y8(lin.0, lin.1, lin.2) - target_y).abs();
+    for nr in steps(r) {
+        let lr = lin(nr);
+        for ng in steps(g) {
+            let lg = lin(ng);
+            let y_rg = 0.2126 * lr + 0.7152 * lg;
+            for nb in steps(b) {
+                let lb = lin(nb);
+                let err = (y_rg + 0.0722 * lb - target_y).abs();
                 if err < best_err {
                     best_err = err;
                     best = (nr, ng, nb);
-                    best_lin = lin;
+                    best_lin = (lr, lg, lb);
                 }
             }
         }
@@ -218,12 +223,62 @@ pub fn tonal_oklch_to_oklch(color: TonalOklch) -> Oklch {
     gamut_map_with_tone_preservation(cie_lstar_to_y(tone), hue, chroma)
 }
 
+/// Snap, not clamp: edge channels must come out as exactly 0 and 1.
+#[inline]
+fn gamma(v: f64) -> f64 {
+    if v >= 1.0 {
+        1.0
+    } else if v <= 0.0 {
+        0.0
+    } else {
+        delinearize(v)
+    }
+}
+
+/// Everything up to the 8-bit color for a tone strictly inside (0, 100):
+/// the exact-tone float sRGB, the nudged 8-bit color and its linear RGB.
+fn convert(color: TonalOklch) -> (Srgb, Rgb8, Lrgb) {
+    let TonalOklch { tone, chroma, hue } = color;
+    let target_y = cie_lstar_to_y(tone);
+    let (_, linear) = gamut_map_to_lrgb(target_y, hue, chroma);
+
+    let exact = pull_toward_gray(linear, target_y);
+    let rgb = Srgb {
+        r: gamma(exact.r),
+        g: gamma(exact.g),
+        b: gamma(exact.b),
+    };
+
+    let (rgb8, lin) = if chroma == 0.0 {
+        // One rounding for all three channels keeps R=G=B exact, so no nudge.
+        let v = (gamma(target_y) * 255.0).round();
+        let lv = LINEAR_8BIT[v as usize];
+        (
+            Rgb8 {
+                r: v as u8,
+                g: v as u8,
+                b: v as u8,
+            },
+            Lrgb {
+                r: lv,
+                g: lv,
+                b: lv,
+            },
+        )
+    } else {
+        let round = |v: f64| (v * 255.0).round() as i32;
+        nudge_to_target_y(round(rgb.r), round(rgb.g), round(rgb.b), target_y)
+    };
+
+    (rgb, rgb8, lin)
+}
+
 /// Convert a Tonal OKLCh color to sRGB with full result metadata.
 /// Tone is preserved exactly regardless of gamut mapping. The 8-bit output
 /// is nudged ±1 per channel to minimise luminance drift from quantisation,
 /// tightening contrast spread from ~0.04 to ~0.01 across hues.
 pub fn tonal_oklch_to_result(color: TonalOklch) -> TonalOklchResult {
-    let TonalOklch { tone, chroma, hue } = color;
+    let TonalOklch { tone, hue, .. } = color;
 
     if tone <= 0.0 {
         return TonalOklchResult {
@@ -262,47 +317,7 @@ pub fn tonal_oklch_to_result(color: TonalOklch) -> TonalOklchResult {
         };
     }
 
-    let target_y = cie_lstar_to_y(tone);
-    let oklch = gamut_map_with_tone_preservation(target_y, hue, chroma);
-    let linear = oklch_to_lrgb(oklch);
-
-    let exact = pull_toward_gray(linear, target_y);
-    // Snap, not clamp: edge channels must come out as exactly 0 and 1.
-    let gamma = |v: f64| {
-        if v >= 1.0 {
-            1.0
-        } else if v <= 0.0 {
-            0.0
-        } else {
-            delinearize(v)
-        }
-    };
-    let rgb = Srgb {
-        r: gamma(exact.r),
-        g: gamma(exact.g),
-        b: gamma(exact.b),
-    };
-
-    let (rgb8, lin) = if chroma == 0.0 {
-        // One rounding for all three channels keeps R=G=B exact, so no nudge.
-        let v = (gamma(target_y) * 255.0).round();
-        let lv = linearize(v / 255.0);
-        (
-            Rgb8 {
-                r: v as u8,
-                g: v as u8,
-                b: v as u8,
-            },
-            Lrgb {
-                r: lv,
-                g: lv,
-                b: lv,
-            },
-        )
-    } else {
-        let round = |v: f64| (v * 255.0).round() as i32;
-        nudge_to_target_y(round(rgb.r), round(rgb.g), round(rgb.b), target_y)
-    };
+    let (rgb, rgb8, lin) = convert(color);
 
     // Derive OKLCh from the final 8-bit RGB so the coordinates match what
     // culori (or any other tool) would report for this hex value.
@@ -317,11 +332,27 @@ pub fn tonal_oklch_to_result(color: TonalOklch) -> TonalOklchResult {
     }
 }
 
+/// Convert a Tonal OKLCh color to 8-bit sRGB: the same `rgb8` as
+/// [`tonal_oklch_to_result`], without computing the rest of the result.
+pub fn tonal_oklch_to_rgb8(color: TonalOklch) -> Rgb8 {
+    if color.tone <= 0.0 {
+        return Rgb8 { r: 0, g: 0, b: 0 };
+    }
+    if color.tone >= 100.0 {
+        return Rgb8 {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+    }
+    convert(color).1
+}
+
 /// Convert a Tonal OKLCh color to sRGB. Returns the nudged 8-bit values as
 /// 0–1 floats so what you see on screen matches the target luminance as
 /// closely as possible.
 pub fn tonal_oklch_to_rgb(color: TonalOklch) -> Srgb {
-    let Rgb8 { r, g, b } = tonal_oklch_to_result(color).rgb8;
+    let Rgb8 { r, g, b } = tonal_oklch_to_rgb8(color);
     Srgb {
         r: f64::from(r) / 255.0,
         g: f64::from(g) / 255.0,

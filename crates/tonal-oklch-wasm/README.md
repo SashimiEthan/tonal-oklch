@@ -11,7 +11,7 @@ The output lands in `pkg/`: an ES module, its `.d.ts`, and a 47 KB `.wasm` file.
 
 ## Why batch functions
 
-Every call across the JS ↔ WASM boundary costs more than converting one color, so the API takes flat typed arrays and converts many colors per call. On the 22,185-color golden grid, one batch call runs 2.1× faster than the JS package (2.0 vs 4.4 µs/color in Node 24). The native Rust crate is faster still (1.0 µs/color); the gap is WASM's software math library.
+Every call across the JS ↔ WASM boundary costs more than converting one color, so the API takes flat typed arrays and converts many colors per call. On the 22,185-color golden grid, one batch call runs 2.7× faster than the JS package (1.7 vs 4.5 µs/color in Node 24). The native Rust crate is faster still (0.8 µs/color); the gap is WASM's software math library.
 
 ## Usage
 

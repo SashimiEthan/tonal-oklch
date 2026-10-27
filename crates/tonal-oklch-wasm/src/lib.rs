@@ -4,7 +4,10 @@
 //! JS↔WASM boundary in one call. Input colors are `[tone, chroma, hue, ...]`
 //! triples; see each function for its output layout.
 
-use tonal_oklch::{TonalOklch, rgb_to_tonal_oklch, tonal_oklch_to_oklch, tonal_oklch_to_result};
+use tonal_oklch::{
+    TonalOklch, rgb_to_tonal_oklch, tonal_oklch_to_oklch, tonal_oklch_to_result,
+    tonal_oklch_to_rgb8,
+};
 use wasm_bindgen::prelude::*;
 
 /// Number of values per color in [`tonal_oklch_to_result_batch`]'s output.
@@ -28,7 +31,7 @@ fn triples<'a>(
 pub fn tonal_oklch_to_rgb8_batch(colors: &[f64]) -> Result<Vec<u8>, JsError> {
     let mut out = Vec::with_capacity(colors.len());
     for (tone, chroma, hue) in triples(colors, "tone, chroma, hue")? {
-        let rgb8 = tonal_oklch_to_result(TonalOklch { tone, chroma, hue }).rgb8;
+        let rgb8 = tonal_oklch_to_rgb8(TonalOklch { tone, chroma, hue });
         out.extend_from_slice(&[rgb8.r, rgb8.g, rgb8.b]);
     }
     Ok(out)

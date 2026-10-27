@@ -6,7 +6,7 @@
 //! stale.
 
 use crate::luminance::is_displayable;
-use crate::oklab::{LMS2RGB, Lrgb, M_AB, Oklch, chroma_hue_to_ab, hue_direction, lab_to_lrgb};
+use crate::oklab::{LMS2RGB, Lrgb, M_AB, Oklch, hue_direction, lab_to_lrgb};
 
 /// Luminance weight of each cubed cone response: Y = Σ W[i]·LMS[i].
 const W: [f64; 3] = {
@@ -19,20 +19,22 @@ const W: [f64; 3] = {
     w
 };
 
-/// Largest real root of t³ + B·t² + C·t + D = 0.
+/// Σ W[i]: the L³ coefficient of the luminance cubic.
+const W_SUM: f64 = W[0] + W[1] + W[2];
+
+/// Largest real root of the depressed cubic t³ + p·t + q = 0, plus `shift`.
+/// `p_third` = p/3 and `p3_27` = p³/27 arrive precomputed so the discriminant
+/// and the Cardano correction need no division on the dependent path.
 #[inline]
-fn largest_real_root(b: f64, c: f64, d: f64) -> f64 {
-    let p = c - (b * b) / 3.0;
-    let q = (2.0 * (b * b * b)) / 27.0 - (b * c) / 3.0 + d;
-    let shift = -b / 3.0;
-    let disc = (q * q) / 4.0 + (p * p * p) / 27.0;
+fn largest_real_root(p: f64, p_third: f64, p3_27: f64, q: f64, shift: f64) -> f64 {
+    let disc = (q * q) / 4.0 + p3_27;
 
     if disc > 0.0 {
         let s = disc.sqrt();
         // Cube-root only the larger-magnitude term and derive the other from it;
         // adding both cube roots cancels and drifts ~1e-7 at light tones.
         let u = (if q < 0.0 { -q / 2.0 + s } else { -q / 2.0 - s }).cbrt();
-        return u - p / (3.0 * u) + shift;
+        return u - p_third / u + shift;
     }
 
     if p == 0.0 {
@@ -47,28 +49,12 @@ fn largest_real_root(b: f64, c: f64, d: f64) -> f64 {
     r * phi.cos() + shift
 }
 
-/// OKLCh L that produces `target_y` at Oklab offsets (a, b), clamped to [0, 1].
-#[inline]
-fn solve_l(target_y: f64, a: f64, b: f64) -> f64 {
-    let (mut a3, mut a2, mut a1, mut a0) = (0.0, 0.0, 0.0, 0.0);
-    for i in 0..3 {
-        let o = M_AB[i][0] * a + M_AB[i][1] * b;
-        a3 += W[i];
-        a2 += 3.0 * W[i] * o;
-        a1 += 3.0 * W[i] * o * o;
-        a0 += W[i] * (o * o * o);
-    }
-
-    largest_real_root(a2 / a3, a1 / a3, (a0 - target_y) / a3).clamp(0.0, 1.0)
-}
-
 /// Solve for the OKLCh L that produces a target CIE Y at given chroma and
 /// hue. Each cone response is (L + o)³ with o fixed by (C, h), so
 /// Y = Σ W·(L + o)³ is a cubic in L. Returns the largest real root, clamped
 /// to [0, 1].
 pub fn find_l_for_target_y(target_y: f64, chroma: f64, hue: f64) -> f64 {
-    let (a, b) = chroma_hue_to_ab(chroma, hue);
-    solve_l(target_y, a, b)
+    Path::new(target_y, hue).l_at(chroma)
 }
 
 /// Linear-RGB tolerance for "fits in sRGB". Also the band `provably_empty` reasons about.
@@ -113,24 +99,73 @@ fn provably_empty(a: &Sample, b: &Sample) -> bool {
 }
 
 /// The constant-Y path through chroma at one hue; (u, v) is the hue's unit vector.
+///
+/// Each cone offset is c·k with k fixed by the hue, so the luminance cubic's
+/// coefficients are polynomials in c and its depressed form is
+/// t³ + (α·c²)·t + (β·c³ − γ) = 0 with L = t + σ·c. The constants are
+/// computed once here; `l_at` is then a handful of multiplies plus the root.
 struct Path {
-    target_y: f64,
     u: f64,
     v: f64,
+    alpha: f64,
+    alpha_third: f64,
+    alpha3_27: f64,
+    beta: f64,
+    gamma: f64,
+    sigma: f64,
 }
 
 impl Path {
+    fn new(target_y: f64, hue: f64) -> Self {
+        let (u, v) = hue_direction(hue);
+
+        let (mut s1, mut s2, mut s3) = (0.0, 0.0, 0.0);
+        for i in 0..3 {
+            let k = M_AB[i][0] * u + M_AB[i][1] * v;
+            s1 += W[i] * k;
+            s2 += W[i] * k * k;
+            s3 += W[i] * (k * k * k);
+        }
+        // Monic cubic L³ + B·L² + C·L + D with B = b·c, C = cc·c², D = d·c³ − y.
+        let b = 3.0 * s1 / W_SUM;
+        let cc = 3.0 * s2 / W_SUM;
+        let d = s3 / W_SUM;
+        let y = target_y / W_SUM;
+
+        let alpha = cc - (b * b) / 3.0;
+        Self {
+            u,
+            v,
+            alpha,
+            alpha_third: alpha / 3.0,
+            alpha3_27: (alpha * alpha * alpha) / 27.0,
+            beta: (2.0 * (b * b * b)) / 27.0 - (b * cc) / 3.0 + d,
+            gamma: y,
+            sigma: -b / 3.0,
+        }
+    }
+
+    /// OKLCh L at chroma c on the path, clamped to [0, 1].
     #[inline]
     fn l_at(&self, c: f64) -> f64 {
-        solve_l(self.target_y, c * self.u, c * self.v)
+        let c2 = c * c;
+        let c3 = c2 * c;
+        largest_real_root(
+            self.alpha * c2,
+            self.alpha_third * c2,
+            self.alpha3_27 * (c3 * c3),
+            self.beta * c3 - self.gamma,
+            self.sigma * c,
+        )
+        .clamp(0.0, 1.0)
     }
 
     /// Linear RGB of the color at chroma c on the path, and whether it fits.
-    #[inline]
+    // Out of line, `Sample` returns through memory and adds ~20% to the bisection loop.
+    #[inline(always)]
     fn sample(&self, c: f64) -> Sample {
-        let (a, b) = (c * self.u, c * self.v);
-        let l = solve_l(self.target_y, a, b);
-        let Lrgb { r, g, b } = lab_to_lrgb(l, a, b);
+        let l = self.l_at(c);
+        let Lrgb { r, g, b } = lab_to_lrgb(l, c * self.u, c * self.v);
         Sample {
             c,
             l,
@@ -142,6 +177,8 @@ impl Path {
     }
 
     /// Bracket around the highest feasible chroma strictly inside (a, b), both infeasible, or None.
+    // Rare path; inlining it bloats the bisection loop.
+    #[inline(never)]
     fn top_inside(&self, a: &Sample, b: &Sample, tol: f64) -> Option<Bracket> {
         let width = b.c - a.c;
         // A NaN width must also stop the recursion.
@@ -183,16 +220,26 @@ impl Path {
 ///
 /// Typically 26–30 samples, one solve and one Oklab→RGB conversion each.
 pub fn gamut_map_with_tone_preservation(target_y: f64, hue: f64, max_chroma: f64) -> Oklch {
-    let (u, v) = hue_direction(hue);
-    let path = Path { target_y, u, v };
+    let Sample { l, c, .. } = map_chroma(target_y, hue, max_chroma);
+    Oklch { l, c, h: hue }
+}
+
+/// `gamut_map_with_tone_preservation` plus the mapped color's linear RGB,
+/// which the final sample already holds.
+pub(crate) fn gamut_map_to_lrgb(target_y: f64, hue: f64, max_chroma: f64) -> (Oklch, Lrgb) {
+    let Sample { l, c, r, g, b, .. } = map_chroma(target_y, hue, max_chroma);
+    (Oklch { l, c, h: hue }, Lrgb { r, g, b })
+}
+
+/// The sample at the mapped chroma. Inlined into each wrapper so the
+/// bisection loop keeps its state in registers rather than a returned struct.
+#[inline(always)]
+fn map_chroma(target_y: f64, hue: f64, max_chroma: f64) -> Sample {
+    let path = Path::new(target_y, hue);
 
     let top = path.sample(max_chroma);
     if top.fits {
-        return Oklch {
-            l: top.l,
-            c: max_chroma,
-            h: hue,
-        };
+        return top;
     }
 
     let tol = max_chroma / f64::from(1u32 << OUTER_ITER);
@@ -216,9 +263,5 @@ pub fn gamut_map_with_tone_preservation(target_y: f64, hue: f64, max_chroma: f64
         Some(bracket) => (bracket.lo + bracket.hi.c) / 2.0,
         None => (lo + hi.c) / 2.0,
     };
-    Oklch {
-        l: path.l_at(c),
-        c,
-        h: hue,
-    }
+    path.sample(c)
 }

@@ -4,7 +4,7 @@
 use std::hint::black_box;
 use std::time::Instant;
 
-use tonal_oklch::{TonalOklch, tonal_oklch_to_oklch, tonal_oklch_to_result};
+use tonal_oklch::{TonalOklch, tonal_oklch_to_oklch, tonal_oklch_to_result, tonal_oklch_to_rgb8};
 
 const TONES: [f64; 29] = [
     0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 49.83, 49.84, 50.0,
@@ -76,6 +76,9 @@ fn main() {
         time(&in_gamut, 9, tonal_oklch_to_result),
     );
     report("mapped", &mapped, time(&mapped, 9, tonal_oklch_to_result));
+
+    println!("\ntonal_oklch_to_rgb8");
+    report("all", &all, time(&all, 9, tonal_oklch_to_rgb8));
 
     println!("\ntonal_oklch_to_oklch");
     report("all", &all, time(&all, 9, tonal_oklch_to_oklch));
