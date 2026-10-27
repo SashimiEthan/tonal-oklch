@@ -68,11 +68,11 @@ Single thread, on the 22,185-color golden grid (72% of which needs gamut mapping
 
 | | Rust (native) | JS (Node 24) |
 |---|---|---|
-| `tonal_oklch_to_result`, all colors | 0.79 µs/color | 4.54 µs/color |
+| `tonal_oklch_to_result`, all colors | 0.58 µs/color | 4.54 µs/color |
 | in-gamut colors | 0.13 µs/color | 0.88 µs/color |
-| gamut-mapped colors | 1.01 µs/color | 5.98 µs/color |
-| `tonal_oklch_to_rgb8`, all colors | 0.75 µs/color | — |
-| `tonal_oklch_to_oklch`, all colors | 0.66 µs/color | 3.99 µs/color |
+| gamut-mapped colors | 0.75 µs/color | 5.98 µs/color |
+| `tonal_oklch_to_rgb8`, all colors | 0.55 µs/color | — |
+| `tonal_oklch_to_oklch`, all colors | 0.48 µs/color | 3.99 µs/color |
 
 Reproduce with `cargo run --release --example bench` and `npm run bench` from the repository root. The conversions are pure functions, so large palettes parallelize trivially with [rayon](https://crates.io/crates/rayon): `colors.par_iter().map(|&c| tonal_oklch_to_result(c))`.
 
