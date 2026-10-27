@@ -65,6 +65,10 @@ const CURVATURE: f64 = 32.0;
 const MIN_WIDTH: f64 = 1e-6;
 /// Bisection steps; the final bracket is `max_chroma / 2^OUTER_ITER` wide.
 const OUTER_ITER: u32 = 25;
+/// Overlapped bisection rounds before the boundary is predicted; see `Path::bisect_predicted`.
+const PREDICT_ROUNDS: u32 = 3;
+/// Predicted midpoints solved before the refinement sample lands.
+const HEAD: usize = 8;
 
 #[derive(Clone, Copy)]
 struct Sample {
@@ -75,6 +79,16 @@ struct Sample {
     b: f64,
     fits: bool,
 }
+
+/// The bracket's low end before any feasible sample: chroma 0, NaN channels.
+const UNSAMPLED_LO: Sample = Sample {
+    c: 0.0,
+    l: f64::NAN,
+    r: f64::NAN,
+    g: f64::NAN,
+    b: f64::NAN,
+    fits: true,
+};
 
 struct Bracket {
     lo: f64,
@@ -96,6 +110,60 @@ fn provably_empty(a: &Sample, b: &Sample) -> bool {
         }
     }
     false
+}
+
+/// The band edge `hi` is furthest outside: 0..3 below -EPS for r, g, b; 3..6 above 1+EPS.
+#[inline(always)]
+fn active_bound(hi: &Sample) -> usize {
+    let v = [
+        -EPS - hi.r,
+        -EPS - hi.g,
+        -EPS - hi.b,
+        hi.r - 1.0 - EPS,
+        hi.g - 1.0 - EPS,
+        hi.b - 1.0 - EPS,
+    ];
+    let mut best = 0;
+    for (i, x) in v.iter().enumerate().skip(1) {
+        if *x > v[best] {
+            best = i;
+        }
+    }
+    best
+}
+
+/// How far `s` is outside band edge `bound`; the same expressions `provably_empty` tests.
+#[inline(always)]
+fn violation(s: &Sample, bound: usize) -> f64 {
+    match bound {
+        0 => -EPS - s.r,
+        1 => -EPS - s.g,
+        2 => -EPS - s.b,
+        3 => s.r - 1.0 - EPS,
+        4 => s.g - 1.0 - EPS,
+        _ => s.b - 1.0 - EPS,
+    }
+}
+
+/// Estimated boundary chroma strictly inside (lo, hi), or NaN: inverse
+/// quadratic interpolation of the active channel through lo, hi and a third
+/// nearby sample, falling back to the secant.
+#[inline(always)]
+fn predict_boundary(lo: &Sample, hi: &Sample, third: &Sample) -> f64 {
+    let bound = active_bound(hi);
+    let (fl, fh, ft) = (
+        violation(lo, bound),
+        violation(hi, bound),
+        violation(third, bound),
+    );
+    let p = lo.c * fh * ft / ((fl - fh) * (fl - ft))
+        + hi.c * fl * ft / ((fh - fl) * (fh - ft))
+        + third.c * fl * fh / ((ft - fl) * (ft - fh));
+    if p > lo.c && p < hi.c {
+        return p;
+    }
+    let s = lo.c + (hi.c - lo.c) * fl / (fl - fh);
+    if s > lo.c && s < hi.c { s } else { f64::NAN }
 }
 
 /// The constant-Y path through chroma at one hue; (u, v) is the hue's unit vector.
@@ -164,7 +232,12 @@ impl Path {
     // Out of line, `Sample` returns through memory and adds ~20% to the bisection loop.
     #[inline(always)]
     fn sample(&self, c: f64) -> Sample {
-        let l = self.l_at(c);
+        self.finish(c, self.l_at(c))
+    }
+
+    /// The sample at chroma c once its L is known.
+    #[inline(always)]
+    fn finish(&self, c: f64, l: f64) -> Sample {
         let Lrgb { r, g, b } = lab_to_lrgb(l, c * self.u, c * self.v);
         Sample {
             c,
@@ -242,8 +315,8 @@ impl Path {
 /// depending on `max_chroma`.
 ///
 /// Typically 26–30 samples, one solve and one Oklab→RGB conversion each,
-/// or on most targets 13 rounds of three samples overlapping in flight;
-/// see `map_chroma`.
+/// issued a few at a time and then as one predicted batch rather than one
+/// by one; see `Path::bisect_predicted`.
 pub fn gamut_map_with_tone_preservation(target_y: f64, hue: f64, max_chroma: f64) -> Oklch {
     let Sample { l, c, .. } = map_chroma(target_y, hue, max_chroma);
     Oklch { l, c, h: hue }
@@ -268,19 +341,13 @@ fn map_chroma(target_y: f64, hue: f64, max_chroma: f64) -> Sample {
     }
 
     let tol = max_chroma / f64::from(1u32 << OUTER_ITER);
-    // Measured 11% slower on wasm32, where software cbrt leaves no issue
-    // slack for the extra samples.
-    if cfg!(target_arch = "wasm32") {
-        path.bisect_serial(top, tol)
-    } else {
-        path.bisect_overlapped(top, tol)
-    }
+    path.bisect_predicted(top, tol)
 }
 
 impl Path {
-    /// One bisection step at a time. `top` is the infeasible sample at
-    /// `max_chroma`.
-    #[inline(always)]
+    /// The reference: one bisection step at a time. `top` is the infeasible
+    /// sample at `max_chroma`.
+    #[cfg(test)]
     fn bisect_serial(&self, top: Sample, tol: f64) -> Sample {
         let mut lo = 0.0;
         let mut hi = top;
@@ -305,55 +372,145 @@ impl Path {
         self.sample(c)
     }
 
-    /// Same result as `bisect_serial`, two steps per round: the midpoint and
-    /// both candidates for the next midpoint are sampled before either
-    /// decision, so the three independent solves overlap in flight; the
-    /// decisions then replay in the original order. Same points, same
-    /// expressions, so the result is bit-identical. The last round's second
-    /// sample is the mapped color itself.
+    /// `bisect_serial`'s result with far fewer dependent steps. The first
+    /// `PREDICT_ROUNDS` rounds sample the midpoint and both candidate next
+    /// midpoints before either decision, so three solves overlap in flight.
+    /// The boundary is then estimated from the channel `hi` violates most,
+    /// every remaining midpoint along the predicted decision path is solved
+    /// at once, and the decisions are checked against the serial loop's. A
+    /// wrong one, or an island check the fast path cannot settle, replays
+    /// exactly from the last verified bracket. Same points, same
+    /// expressions, so the result is bit-identical.
     #[inline(always)]
-    fn bisect_overlapped(&self, top: Sample, tol: f64) -> Sample {
-        const _: () = assert!(
-            OUTER_ITER % 2 == 1,
-            "the final round supplies the mapped sample"
-        );
-        const LAST_ROUND: u32 = OUTER_ITER / 2;
+    fn bisect_predicted(&self, top: Sample, tol: f64) -> Sample {
+        const BATCH: usize = (OUTER_ITER - 2 * PREDICT_ROUNDS) as usize + 1;
 
-        let mut lo = 0.0;
+        let mut lo = UNSAMPLED_LO;
         let mut hi = top;
-        let mut island: Option<Bracket> = None;
-        for round in 0..=LAST_ROUND {
-            let mc = (lo + hi.c) / 2.0;
+        let mut third = top;
+        for _ in 0..PREDICT_ROUNDS {
+            let mc = (lo.c + hi.c) / 2.0;
             let m = self.sample(mc);
             let above = self.sample((mc + hi.c) / 2.0);
-            let below = self.sample((lo + mc) / 2.0);
+            let below = self.sample((lo.c + mc) / 2.0);
 
             if !m.fits && !self.no_island(&m, &hi) {
-                island = self.search_inside(&m, &hi, tol, Some(&above));
-                if island.is_some() {
-                    break;
+                if let Some(island) = self.search_inside(&m, &hi, tol, Some(&above)) {
+                    return self.sample((island.lo + island.hi.c) / 2.0);
                 }
             }
             let next = select(m.fits, &above, &below);
-            let lo1 = if m.fits { m.c } else { lo };
+            let lo1 = select(m.fits, &m, &lo);
             let hi1 = select(m.fits, &hi, &m);
-            if round == LAST_ROUND {
-                return next;
-            }
-
             if !next.fits {
-                island = self.top_inside(&next, &hi1, tol);
-                if island.is_some() {
-                    break;
+                if let Some(island) = self.top_inside(&next, &hi1, tol) {
+                    return self.sample((island.lo + island.hi.c) / 2.0);
                 }
             }
-            lo = if next.fits { next.c } else { lo1 };
+            // The displaced endpoint nearest the new bracket, for interpolation.
+            let lo_sampled = !lo.l.is_nan();
+            third = if m.fits == next.fits || (!m.fits && !lo_sampled) {
+                m
+            } else if m.fits {
+                hi
+            } else {
+                lo
+            };
+            lo = select(next.fits, &next, &lo1);
             hi = select(next.fits, &hi1, &next);
         }
+        if lo.l.is_nan() {
+            lo = self.sample(0.0);
+        }
 
-        match island {
-            Some(island) => self.sample((island.lo + island.hi.c) / 2.0),
-            None => unreachable!("the last round returns the mapped sample"),
+        let mut done = 2 * PREDICT_ROUNDS;
+        loop {
+            let remaining = (OUTER_ITER - done) as usize;
+            // Prediction endpoints only; the bracket itself stays on dyadic midpoints.
+            let (mut plo, mut phi) = (lo, hi);
+            let mut c_pred = predict_boundary(&plo, &phi, &third);
+            let valid = c_pred > plo.c && c_pred < phi.c;
+            // One sample at the prediction sharpens it while the first HEAD
+            // midpoints, predicted without it, are already in flight.
+            let refine = self.sample(if valid { c_pred } else { lo.c });
+
+            let mut cs = [0.0; BATCH];
+            let mut ls = [0.0; BATCH];
+            let mut predicted = 0u32;
+            let (mut qlo, mut qhi) = (lo.c, hi.c);
+            let mut predict = |i: usize, c_pred: f64| {
+                let m = (qlo + qhi) / 2.0;
+                cs[i] = m;
+                ls[i] = self.l_at(m);
+                let fits = m <= c_pred;
+                predicted |= u32::from(fits) << i;
+                qlo = if fits { m } else { qlo };
+                qhi = if fits { qhi } else { m };
+            };
+            let head = HEAD.min(remaining + 1);
+            for i in 0..head {
+                predict(i, c_pred);
+            }
+            if valid {
+                if refine.fits {
+                    third = plo;
+                    plo = refine;
+                } else {
+                    third = phi;
+                    phi = refine;
+                }
+                c_pred = predict_boundary(&plo, &phi, &third);
+            }
+            for i in head..=remaining {
+                predict(i, c_pred);
+            }
+
+            // Island checks on the channel `hi` violates most only: passing
+            // one clause of `provably_empty` implies `no_island`; failing
+            // defers to the exact replay below.
+            let bound = active_bound(&hi);
+            let mut actual = 0u32;
+            let mut no_search = true;
+            let (mut prev_c, mut prev_v) = (hi.c, violation(&hi, bound));
+            for i in 0..remaining {
+                let s = self.finish(cs[i], ls[i]);
+                actual |= u32::from(s.fits) << i;
+                let v = violation(&s, bound);
+                let width = prev_c - s.c;
+                let bend = (CURVATURE * (width * width)) / 8.0;
+                no_search &= s.fits | ((v > bend) & (prev_v > bend));
+                prev_c = if s.fits { prev_c } else { s.c };
+                prev_v = if s.fits { prev_v } else { v };
+            }
+
+            // The serial loop takes every step up to and including the first
+            // decision the prediction got wrong.
+            let mismatch = (actual ^ predicted) & ((1u32 << remaining) - 1);
+            if mismatch == 0 && no_search {
+                return self.finish(cs[remaining], ls[remaining]);
+            }
+            let steps = if mismatch == 0 {
+                remaining
+            } else {
+                mismatch.trailing_zeros() as usize + 1
+            };
+            for j in 0..steps {
+                let m = self.finish(cs[j], ls[j]);
+                debug_assert_eq!(m.c, (lo.c + hi.c) / 2.0);
+                if m.fits {
+                    third = lo;
+                    lo = m;
+                } else {
+                    if !self.no_island(&m, &hi) {
+                        if let Some(island) = self.search_inside(&m, &hi, tol, None) {
+                            return self.sample((island.lo + island.hi.c) / 2.0);
+                        }
+                    }
+                    third = hi;
+                    hi = m;
+                }
+            }
+            done += steps as u32;
         }
     }
 }
@@ -392,7 +549,7 @@ mod tests {
     }
 
     #[test]
-    fn overlapped_bisection_matches_serial() {
+    fn predicted_bisection_matches_serial() {
         let mut hues: Vec<f64> = (0..360).step_by(3).map(f64::from).collect();
         // The hues where the feasible set splits into islands.
         hues.extend((2620..=2660).map(|h| f64::from(h) / 10.0));
@@ -427,10 +584,10 @@ mod tests {
             }
             let tol = chroma / f64::from(1u32 << OUTER_ITER);
             let serial = path.bisect_serial(top, tol);
-            let overlapped = path.bisect_overlapped(top, tol);
+            let predicted = path.bisect_predicted(top, tol);
             assert_eq!(
                 bits(&serial),
-                bits(&overlapped),
+                bits(&predicted),
                 "tone {tone} chroma {chroma} hue {hue}"
             );
             checked += 1;
