@@ -59,7 +59,7 @@ Reverse conversion from sRGB (channels 0–1) to Tonal OKLCh.
 
 1. **Tone → Y**: CIE L\* is converted to CIE Y (≡ WCAG relative luminance)
 2. **Solve L**: At fixed chroma & hue, Y is a cubic in OKLCh lightness, so the cubic formula gives the lightness that produces the target Y directly
-3. **Gamut map**: If the color is outside sRGB, chroma is reduced while re-solving L at every step — tone is never stale
+3. **Gamut map**: If the color is outside sRGB, chroma is reduced to the highest value that fits, re-solving L at every step — tone is never stale
 4. **Pull toward gray**: Channels left a hair out of range by the gamut tolerance are slid toward the gray of the same luminance instead of clipped, so the tone stays exact
 5. **Nudge**: 8-bit quantization is refined by ±1 per channel to minimize luminance drift
 

@@ -9,9 +9,9 @@
  *   const rgb = tonalOklchToRgb({ tone: 65, chroma: 0.15, hue: 264 });
  */
 
-import { cieLstarToY, yToCieLstar, wcagLuminance, linearize, delinearize, isDisplayable } from './luminance';
-import { oklchToRgb, oklchToLrgb, rgbToOklch, type Lrgb } from './oklab';
-import { findLForTargetY, gamutMapWithTonePreservation } from './solve';
+import { cieLstarToY, yToCieLstar, wcagLuminance, linearize, delinearize } from './luminance';
+import { oklchToLrgb, rgbToOklch, type Lrgb } from './oklab';
+import { gamutMapWithTonePreservation } from './solve';
 
 // ── Exact-tone float output ───────────────────────────────
 
@@ -126,17 +126,7 @@ export function tonalOklchToOklch(color: TonalOklch): { l: number; c: number; h:
   if (tone <= 0) return { l: 0, c: 0, h: hue };
   if (tone >= 100) return { l: 1, c: 0, h: hue };
 
-  const targetY = cieLstarToY(tone);
-  const L = findLForTargetY(targetY, chroma, hue);
-
-  // Check if the full-chroma color is in sRGB gamut
-  const rgb = oklchToRgb({ l: L, c: chroma, h: hue });
-  if (isDisplayable(rgb.r, rgb.g, rgb.b)) {
-    return { l: L, c: chroma, h: hue };
-  }
-
-  // Gamut map: reduce chroma while re-solving L to preserve tone
-  return gamutMapWithTonePreservation(targetY, hue, chroma);
+  return gamutMapWithTonePreservation(cieLstarToY(tone), hue, chroma);
 }
 
 /**

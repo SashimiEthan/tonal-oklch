@@ -254,6 +254,22 @@ describe('gamut mapping', () => {
     const oklch = tonalOklchToOklch({ tone: 50, chroma: 0.01, hue: 100 });
     expect(oklch.c).toBeCloseTo(0.01, 3);
   });
+
+  it('judges fit in linear RGB, so a request the mapper would accept is kept as is', () => {
+    // Request 0.2 at tone 15 hue 264 sits just inside the gamut tolerance.
+    const oklch = tonalOklchToOklch({ tone: 15, chroma: 0.2, hue: 264 });
+    expect(oklch.c).toBe(0.2);
+    expect(tonalOklchToResult({ tone: 15, chroma: 0.2, hue: 264 }).hex).toBe('#00028b');
+  });
+
+  it('dark blues at hue 264 map to the strongest feasible chroma regardless of the request', () => {
+    expect(tonalOklchToResult({ tone: 10, chroma: 0.4, hue: 264 }).hex).toBe('#00016d');
+    expect(tonalOklchToResult({ tone: 15, chroma: 0.4, hue: 264 }).hex).toBe('#00018c');
+    expect(tonalOklchToResult({ tone: 20, chroma: 0.4, hue: 264 }).hex).toBe('#0100ac');
+    for (const chroma of [0.225, 0.3, 0.375]) {
+      expect(tonalOklchToResult({ tone: 15, chroma, hue: 264 }).hex).toBe('#00018c');
+    }
+  });
 });
 
 // ── Round-trip conversion ─────────────────────────────────

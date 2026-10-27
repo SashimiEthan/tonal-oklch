@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { findLForTargetY, gamutMapWithTonePreservation } from '../solve';
-import { cieLstarToY } from '../luminance';
+import { cieLstarToY, isDisplayable } from '../luminance';
 import { oklchToLrgb } from '../oklab';
 
 function luminanceOf(L: number, C: number, h: number): number {
@@ -115,5 +115,39 @@ describe('gamutMapWithTonePreservation', () => {
     const midC = gamutMapWithTonePreservation(cieLstarToY(50), 150, 0.4).c;
     const darkC = gamutMapWithTonePreservation(cieLstarToY(15), 150, 0.4).c;
     expect(midC).toBeGreaterThan(darkC);
+  });
+
+  it('returns the requested chroma unchanged when it fits', () => {
+    const result = gamutMapWithTonePreservation(cieLstarToY(50), 150, 0.05);
+    expect(result.c).toBe(0.05);
+  });
+
+  it('finds the upper feasible island at hue 264, whatever chroma was requested', () => {
+    // Dark blues near the blue primary have a second feasible island above a gap.
+    for (const [tone, lowerTop, minRequest] of [[10, 0.146, 0.2], [15, 0.169, 0.225], [20, 0.194, 0.25]]) {
+      const Y = cieLstarToY(tone);
+      const first = gamutMapWithTonePreservation(Y, 264, minRequest).c;
+      expect(first).toBeGreaterThan(lowerTop + 0.01);
+      for (let request = minRequest; request <= 0.4; request += 0.025) {
+        expect(gamutMapWithTonePreservation(Y, 264, request).c).toBeCloseTo(first, 7);
+      }
+    }
+  });
+
+  it('mapped chroma never decreases as the request grows, and the result fits', () => {
+    const hues = [0, 29, 100, 150, 200, 263.9, 264, 264.1, 300, 328];
+    for (const tone of [0.5, 5, 10, 15, 20, 30, 50, 75, 99]) {
+      const Y = cieLstarToY(tone);
+      for (const hue of hues) {
+        let prev = 0;
+        for (let request = 0.01; request <= 0.4; request += 0.01) {
+          const { l, c } = gamutMapWithTonePreservation(Y, hue, request);
+          expect(c).toBeGreaterThanOrEqual(prev - 3e-8);
+          const { r, g, b } = oklchToLrgb({ l, c, h: hue });
+          expect(isDisplayable(r, g, b, 1e-4 + 1e-6)).toBe(true);
+          prev = c;
+        }
+      }
+    }
   });
 });
