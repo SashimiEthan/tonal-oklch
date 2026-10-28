@@ -696,7 +696,8 @@ impl Path {
             return false;
         }
         let top3 = top * top * top;
-        if !(self.beta * top3 - self.gamma < -1e-12) {
+        // q = β·c³ − γ is monotone in c, so q < 0 on [0, top] needs both ends.
+        if !(self.gamma > 1e-12) || !(self.beta * top3 - self.gamma < -1e-12) {
             return false;
         }
         if self.d > 0.0 && !(self.d * top3 < self.gamma - 1e-9) {
@@ -1388,6 +1389,17 @@ mod tests {
                 cases.push((y, 264.0, chroma));
             }
         }
+        // Targets just outside (0, 1), where L clamps along the whole path.
+        for _ in 0..3_000 {
+            let eps = 10f64.powf(-9.0 + 8.0 * rand());
+            let y = if rand() < 0.5 { -eps } else { 1.0 + eps };
+            cases.push((y, 360.0 * rand(), 0.5 * rand()));
+        }
+        cases.push((
+            -4.264_090_480_202_11e-5,
+            264.341_713_780_348_75,
+            0.416_664_222_747_554_5,
+        ));
         // A NaN target makes the serial search exhaustive (tens of ms each), so only a few.
         for &chroma in &[0.4, 1e300, f64::NAN] {
             cases.push((f64::NAN, 264.0, chroma));
