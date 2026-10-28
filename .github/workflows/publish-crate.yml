@@ -1,0 +1,37 @@
+name: Publish to crates.io
+
+on:
+  push:
+    tags: ['rust-v*']
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p tonal-oklch --release
+      - name: Read the crate version
+        id: crate
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "tonal-oklch") | .version')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # An existing version can't be republished; a rerun or a tag pushed after a manual publish is a no-op.
+          if curl -sf -A "tonal-oklch CI (https://github.com/SashimiEthan/tonal-oklch)" -o /dev/null "https://crates.io/api/v1/crates/tonal-oklch/$version"; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check the tag matches the crate version
+        if: github.ref_type == 'tag'
+        run: test "$GITHUB_REF_NAME" = "rust-v${{ steps.crate.outputs.version }}"
+      - uses: rust-lang/crates-io-auth-action@v1
+        if: steps.crate.outputs.published != 'true'
+        id: auth
+      - run: cargo publish -p tonal-oklch
+        if: steps.crate.outputs.published != 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

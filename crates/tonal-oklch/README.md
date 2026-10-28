@@ -6,11 +6,9 @@ This crate is a dependency-free port of the [`tonal-oklch`](https://www.npmjs.co
 
 ## Install
 
-The crate is not on crates.io yet. Depend on the repository:
-
 ```toml
 [dependencies]
-tonal-oklch = { git = "https://github.com/SashimiEthan/tonal-oklch" }
+tonal-oklch = "0.1"
 ```
 
 ## Usage
