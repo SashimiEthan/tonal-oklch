@@ -161,41 +161,56 @@ fn pull_toward_gray(Lrgb { r, g, b }: Lrgb, y: f64) -> Lrgb {
 /// contrast spread from ~0.04 to ~0.01. Also returns the winner's linear RGB.
 fn nudge_to_target_y(r: i32, g: i32, b: i32, target_y: f64) -> (Rgb8, Lrgb) {
     let lut = &*LINEAR_8BIT;
-    let lin = |k: i32| lut[k as usize];
-    let steps = |k: i32| (k - 1).max(0)..=(k + 1).min(255);
+    // Linear values of k-1, k, k+1; a neighbour off the 8-bit range is
+    // marked so its error reads +inf and can never win.
+    let around = |k: i32| -> ([f64; 3], [bool; 3]) {
+        let mut lin = [0.0; 3];
+        let mut valid = [false; 3];
+        for (d, (l, v)) in lin.iter_mut().zip(valid.iter_mut()).enumerate() {
+            let n = k - 1 + d as i32;
+            *v = (0..=255).contains(&n);
+            *l = lut[n.clamp(0, 255) as usize];
+        }
+        (lin, valid)
+    };
+    let (lr, vr) = around(r);
+    let (lg, vg) = around(g);
+    let (lb, vb) = around(b);
 
-    let mut best = (r, g, b);
-    let mut best_lin = (lin(r), lin(g), lin(b));
-    let mut best_err =
-        (0.2126 * best_lin.0 + 0.7152 * best_lin.1 + 0.0722 * best_lin.2 - target_y).abs();
-
-    for nr in steps(r) {
-        let lr = lin(nr);
-        for ng in steps(g) {
-            let lg = lin(ng);
-            let y_rg = 0.2126 * lr + 0.7152 * lg;
-            for nb in steps(b) {
-                let lb = lin(nb);
-                let err = (y_rg + 0.0722 * lb - target_y).abs();
-                if err < best_err {
-                    best_err = err;
-                    best = (nr, ng, nb);
-                    best_lin = (lr, lg, lb);
-                }
+    // The centre is seeded first, so a neighbour must beat it strictly;
+    // then the 27 candidates in scan order, first minimum winning. Selects
+    // rather than branches: the winner is unpredictable.
+    let mut best_err = (0.2126 * lr[1] + 0.7152 * lg[1] + 0.0722 * lb[1] - target_y).abs();
+    let mut best = 13usize;
+    for ir in 0..3 {
+        let y_r = 0.2126 * lr[ir];
+        for ig in 0..3 {
+            let y_rg = y_r + 0.7152 * lg[ig];
+            for ib in 0..3 {
+                let err = (y_rg + 0.0722 * lb[ib] - target_y).abs();
+                let err = if vr[ir] & vg[ig] & vb[ib] {
+                    err
+                } else {
+                    f64::INFINITY
+                };
+                let better = err < best_err;
+                best_err = if better { err } else { best_err };
+                best = if better { ir * 9 + ig * 3 + ib } else { best };
             }
         }
     }
 
+    let (ir, ig, ib) = (best / 9, (best / 3) % 3, best % 3);
     (
         Rgb8 {
-            r: best.0 as u8,
-            g: best.1 as u8,
-            b: best.2 as u8,
+            r: (r - 1 + ir as i32) as u8,
+            g: (g - 1 + ig as i32) as u8,
+            b: (b - 1 + ib as i32) as u8,
         },
         Lrgb {
-            r: best_lin.0,
-            g: best_lin.1,
-            b: best_lin.2,
+            r: lr[ir],
+            g: lg[ig],
+            b: lb[ib],
         },
     )
 }

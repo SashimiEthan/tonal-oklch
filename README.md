@@ -65,7 +65,7 @@ Reverse conversion from sRGB (channels 0–1) to Tonal OKLCh.
 
 ## Rust and WebAssembly
 
-The same algorithm ships as a dependency-free Rust crate in [`crates/tonal-oklch`](crates/tonal-oklch), with [`crates/tonal-oklch-wasm`](crates/tonal-oklch-wasm) providing a batch API for WebAssembly. Both produce the same output as this package: all 22,185 colors in the golden fixture match byte for byte. Native Rust runs about 11× faster than the JS package, WASM about 2.7×.
+The same algorithm ships as a dependency-free Rust crate in [`crates/tonal-oklch`](crates/tonal-oklch), with [`crates/tonal-oklch-wasm`](crates/tonal-oklch-wasm) providing a batch API for WebAssembly. Both produce the same output as this package: all 22,185 colors in the golden fixture match byte for byte. Native Rust runs about 14× faster than the JS package, WASM about 4×.
 
 ```bash
 cargo test --workspace        # Rust unit, behavioral and golden tests

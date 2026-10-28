@@ -65,6 +65,8 @@ const CURVATURE: f64 = 32.0;
 const MIN_WIDTH: f64 = 1e-6;
 /// Bisection steps; the final bracket is `max_chroma / 2^OUTER_ITER` wide.
 const OUTER_ITER: u32 = 25;
+/// Levels left after the two exact opening levels.
+const MAX_REM: usize = OUTER_ITER as usize - 2;
 /// Overlapped bisection rounds before the boundary is predicted; see `Path::bisect_predicted`.
 const PREDICT_ROUNDS: u32 = 3;
 /// Predicted midpoints solved before the refinement sample lands.
@@ -98,18 +100,16 @@ struct Bracket {
 /// True when no chroma strictly between a and b (both infeasible) can fit: some
 /// channel is outside the band on the same side at both ends by more than the
 /// curvature bound lets it bend back over an interval this wide.
+#[inline(always)]
 fn provably_empty(a: &Sample, b: &Sample) -> bool {
     let width = b.c - a.c;
     let bend = (CURVATURE * (width * width)) / 8.0;
+    let mut any = false;
     for (av, bv) in [(a.r, b.r), (a.g, b.g), (a.b, b.b)] {
-        if -EPS - av > bend && -EPS - bv > bend {
-            return true;
-        }
-        if av - 1.0 - EPS > bend && bv - 1.0 - EPS > bend {
-            return true;
-        }
+        any |= (-EPS - av > bend) & (-EPS - bv > bend);
+        any |= (av - 1.0 - EPS > bend) & (bv - 1.0 - EPS > bend);
     }
-    false
+    any
 }
 
 /// The band edge `hi` is furthest outside: 0..3 below -EPS for r, g, b; 3..6 above 1+EPS.
@@ -181,18 +181,23 @@ struct Path {
     beta: f64,
     gamma: f64,
     sigma: f64,
+    b: f64,
+    cc: f64,
+    d: f64,
+    k: [f64; 3],
 }
 
 impl Path {
     fn new(target_y: f64, hue: f64) -> Self {
         let (u, v) = hue_direction(hue);
 
+        let mut k = [0.0; 3];
         let (mut s1, mut s2, mut s3) = (0.0, 0.0, 0.0);
         for i in 0..3 {
-            let k = M_AB[i][0] * u + M_AB[i][1] * v;
-            s1 += W[i] * k;
-            s2 += W[i] * k * k;
-            s3 += W[i] * (k * k * k);
+            k[i] = M_AB[i][0] * u + M_AB[i][1] * v;
+            s1 += W[i] * k[i];
+            s2 += W[i] * k[i] * k[i];
+            s3 += W[i] * (k[i] * k[i] * k[i]);
         }
         // Monic cubic L³ + B·L² + C·L + D with B = b·c, C = cc·c², D = d·c³ − y.
         let b = 3.0 * s1 / W_SUM;
@@ -210,6 +215,10 @@ impl Path {
             beta: (2.0 * (b * b * b)) / 27.0 - (b * cc) / 3.0 + d,
             gamma: y,
             sigma: -b / 3.0,
+            b,
+            cc,
+            d,
+            k,
         }
     }
 
@@ -254,7 +263,7 @@ impl Path {
     fn no_island(&self, a: &Sample, b: &Sample) -> bool {
         let width = b.c - a.c;
         // A NaN width must also stop the recursion.
-        width.is_nan() || width < MIN_WIDTH || provably_empty(a, b)
+        width.is_nan() | (width < MIN_WIDTH) | provably_empty(a, b)
     }
 
     /// Bracket around the highest feasible chroma strictly inside (a, b), both infeasible, or None.
@@ -335,13 +344,55 @@ pub(crate) fn gamut_map_to_lrgb(target_y: f64, hue: f64, max_chroma: f64) -> (Ok
 fn map_chroma(target_y: f64, hue: f64, max_chroma: f64) -> Sample {
     let path = Path::new(target_y, hue);
 
-    let top = path.sample(max_chroma);
+    // The first two bisection levels' candidates and gray depend only on
+    // max_chroma, so their solves are issued with the top sample and overlap
+    // it; `black_box` keeps them ahead of the branch. Wasted when top fits.
+    let c4 = (0.0 + max_chroma) / 2.0;
+    let c2 = (0.0 + c4) / 2.0;
+    let c6 = (c4 + max_chroma) / 2.0;
+    let l_top = path.l_at(max_chroma);
+    let l4 = core::hint::black_box(path.l_at(c4));
+    let l2 = core::hint::black_box(path.l_at(c2));
+    let l6 = core::hint::black_box(path.l_at(c6));
+    let l0 = core::hint::black_box(path.l_at(0.0));
+    let top = path.finish(max_chroma, l_top);
     if top.fits {
         return top;
     }
+    let opening = Opening {
+        top,
+        q4: path.finish(c4, l4),
+        q2: path.finish(c2, l2),
+        q6: path.finish(c6, l6),
+        gray: path.finish(0.0, l0),
+    };
+    path.bisect(&opening)
+}
 
-    let tol = max_chroma / f64::from(1u32 << OUTER_ITER);
-    path.bisect_predicted(top, tol)
+/// The top sample, the two exact opening levels' candidates and gray.
+struct Opening {
+    top: Sample,
+    q4: Sample,
+    q2: Sample,
+    q6: Sample,
+    gray: Sample,
+}
+
+impl Path {
+    /// `bisect_serial`'s result from an opening whose `top` does not fit.
+    #[inline(always)]
+    fn bisect(&self, o: &Opening) -> Sample {
+        debug_assert!(!o.top.fits);
+        debug_assert_eq!(o.q4.c, (0.0 + o.top.c) / 2.0);
+        debug_assert_eq!(o.q2.c, (0.0 + o.q4.c) / 2.0);
+        debug_assert_eq!(o.q6.c, (o.q4.c + o.top.c) / 2.0);
+        debug_assert_eq!(o.gray.c, 0.0);
+        let tol = o.top.c / f64::from(1u32 << OUTER_ITER);
+        match self.bisect_certified(o, tol) {
+            Some(s) => s,
+            None => self.bisect_predicted(o, tol),
+        }
+    }
 }
 
 impl Path {
@@ -372,9 +423,11 @@ impl Path {
         self.sample(c)
     }
 
-    /// `bisect_serial`'s result with far fewer dependent steps. The first
-    /// `PREDICT_ROUNDS` rounds sample the midpoint and both candidate next
-    /// midpoints before either decision, so three solves overlap in flight.
+    /// `bisect_serial`'s result with far fewer dependent steps; the fallback
+    /// when `bisect_certified` declines. The first `PREDICT_ROUNDS` rounds
+    /// sample the midpoint and both candidate next midpoints before either
+    /// decision, so three solves overlap in flight (the opening already
+    /// holds the first round's).
     /// The boundary is then estimated from the channel `hi` violates most,
     /// every remaining midpoint along the predicted decision path is solved
     /// at once, and the decisions are checked against the serial loop's. A
@@ -382,17 +435,24 @@ impl Path {
     /// exactly from the last verified bracket. Same points, same
     /// expressions, so the result is bit-identical.
     #[inline(always)]
-    fn bisect_predicted(&self, top: Sample, tol: f64) -> Sample {
+    fn bisect_predicted(&self, o: &Opening, tol: f64) -> Sample {
         const BATCH: usize = (OUTER_ITER - 2 * PREDICT_ROUNDS) as usize + 1;
 
+        let top = o.top;
         let mut lo = UNSAMPLED_LO;
         let mut hi = top;
         let mut third = top;
-        for _ in 0..PREDICT_ROUNDS {
+        for round in 0..PREDICT_ROUNDS {
             let mc = (lo.c + hi.c) / 2.0;
-            let m = self.sample(mc);
-            let above = self.sample((mc + hi.c) / 2.0);
-            let below = self.sample((lo.c + mc) / 2.0);
+            let (m, above, below) = if round == 0 {
+                (o.q4, o.q6, o.q2)
+            } else {
+                (
+                    self.sample(mc),
+                    self.sample((mc + hi.c) / 2.0),
+                    self.sample((lo.c + mc) / 2.0),
+                )
+            };
 
             if !m.fits && !self.no_island(&m, &hi) {
                 if let Some(island) = self.search_inside(&m, &hi, tol, Some(&above)) {
@@ -515,6 +575,572 @@ impl Path {
     }
 }
 
+/// Bound on |d²channel/dc²| used by certificates; surveyed max 43.2 on
+/// certifiable paths with top chroma ≤ `CERT_MAX_TOP`.
+const CERT_CURVATURE: f64 = 64.0;
+const CERT_MAX_TOP: f64 = 0.5;
+/// Covers the solver's rounding error in a channel value (measured ≤ 1e-15).
+const CERT_SLACK: f64 = 1e-11;
+
+/// An exact sample with the channel slopes along the path.
+#[derive(Clone, Copy)]
+struct Anchor {
+    c: f64,
+    ch: [f64; 3],
+    d1: [f64; 3],
+    fits: bool,
+}
+
+impl Anchor {
+    /// Violation and slope of band edge `e` (0..3 below -EPS, 3..6 above 1+EPS).
+    #[inline(always)]
+    fn edge(&self, e: usize) -> (f64, f64) {
+        let j = e % 3;
+        if e < 3 {
+            (-EPS - self.ch[j], -self.d1[j])
+        } else {
+            (self.ch[j] - 1.0 - EPS, self.d1[j])
+        }
+    }
+
+    /// The edge violated most (or least inside).
+    #[inline(always)]
+    fn active(&self) -> usize {
+        let mut best = 0;
+        let mut bv = self.edge(0).0;
+        for e in 1..6 {
+            let v = self.edge(e).0;
+            if v > bv {
+                bv = v;
+                best = e;
+            }
+        }
+        best
+    }
+}
+
+/// Root of the cubic Hermite interpolant of edge `e` between a feasible
+/// `a` and an infeasible `b`; NaN or out of range when the model misbehaves.
+#[inline(always)]
+fn hermite_root(a: &Anchor, b: &Anchor, e: usize) -> f64 {
+    let (va, da) = a.edge(e);
+    let (vb, db) = b.edge(e);
+    let h = b.c - a.c;
+    let (da, db) = (da * h, db * h);
+    let mut s = va / (va - vb);
+    for _ in 0..3 {
+        let s2 = s * s;
+        let s3 = s2 * s;
+        let hv = (2.0 * s3 - 3.0 * s2 + 1.0) * va
+            + (s3 - 2.0 * s2 + s) * da
+            + (3.0 * s2 - 2.0 * s3) * vb
+            + (s3 - s2) * db;
+        let hd = (6.0 * s2 - 6.0 * s) * va
+            + (3.0 * s2 - 4.0 * s + 1.0) * da
+            + (6.0 * s - 6.0 * s2) * vb
+            + (3.0 * s2 - 2.0 * s) * db;
+        s = (s - hv / hd).clamp(0.0, 1.0);
+    }
+    a.c + s * h
+}
+
+impl Path {
+    /// Whether certificates are valid on [0, top]: the solved L is a single
+    /// analytic branch (q < 0 keeps the largest root simple), never clamped,
+    /// and the curvature bound was surveyed up to this chroma.
+    #[inline(always)]
+    #[allow(
+        clippy::neg_cmp_op_on_partial_ord,
+        reason = "a NaN must fail each check"
+    )]
+    fn certifiable(&self, top: f64) -> bool {
+        if !(top <= CERT_MAX_TOP) {
+            return false;
+        }
+        let top3 = top * top * top;
+        if !(self.beta * top3 - self.gamma < -1e-12) {
+            return false;
+        }
+        if self.d > 0.0 && !(self.d * top3 < self.gamma - 1e-9) {
+            return false;
+        }
+        // L < 1 ⟺ G(c) = 1 − y + b c + cc c² + d c³ > 0; check the ends and interior extrema.
+        let g = |c: f64| 1.0 - self.gamma + self.b * c + self.cc * c * c + self.d * c * c * c;
+        let mut gmin = g(top).min(1.0 - self.gamma);
+        let (a2, a1, a0) = (3.0 * self.d, 2.0 * self.cc, self.b);
+        let disc = a1 * a1 - 4.0 * a2 * a0;
+        if a2 != 0.0 && disc >= 0.0 {
+            let sq = disc.sqrt();
+            for r in [(-a1 + sq) / (2.0 * a2), (-a1 - sq) / (2.0 * a2)] {
+                if r > 0.0 && r < top {
+                    gmin = gmin.min(g(r));
+                }
+            }
+        } else if a2 == 0.0 && a1 != 0.0 {
+            let r = -a0 / a1;
+            if r > 0.0 && r < top {
+                gmin = gmin.min(g(r));
+            }
+        }
+        gmin > 1e-9
+    }
+
+    /// Channel slopes at an exact sample: dL/dc from the implicit cubic, then the chain rule.
+    #[inline(always)]
+    fn anchor(&self, s: &Sample) -> Anchor {
+        let (l, c) = (s.l, s.c);
+        let f_l = 3.0 * l * l + 2.0 * self.b * c * l + self.cc * c * c;
+        let f_c = self.b * l * l + 2.0 * self.cc * c * l + 3.0 * self.d * c * c;
+        let l1 = -f_c / f_l;
+        let cube1: [f64; 3] = core::array::from_fn(|i| {
+            let lms = l + self.k[i] * c;
+            3.0 * lms * lms * (l1 + self.k[i])
+        });
+        let d1: [f64; 3] = core::array::from_fn(|j| {
+            LMS2RGB[j][0] * cube1[0] + LMS2RGB[j][1] * cube1[1] + LMS2RGB[j][2] * cube1[2]
+        });
+        Anchor {
+            c,
+            ch: [s.r, s.g, s.b],
+            d1,
+            fits: s.fits,
+        }
+    }
+
+    /// Edge lower bounds at chroma `m` certified from `a`.
+    #[inline(always)]
+    fn certify(&self, a: &Anchor, m: f64) -> [f64; 6] {
+        let d = m - a.c;
+        let err = (CERT_CURVATURE * (d * d)) / 2.0 + CERT_SLACK;
+        let t = [
+            a.ch[0] + a.d1[0] * d,
+            a.ch[1] + a.d1[1] * d,
+            a.ch[2] + a.d1[2] * d,
+        ];
+        [
+            (-EPS - t[0]) - err,
+            (-EPS - t[1]) - err,
+            (-EPS - t[2]) - err,
+            (t[0] - 1.0 - EPS) - err,
+            (t[1] - 1.0 - EPS) - err,
+            (t[2] - 1.0 - EPS) - err,
+        ]
+    }
+
+    /// Violations of the six band edges at an exact sample.
+    #[inline(always)]
+    fn violations(s: &Sample) -> [f64; 6] {
+        [
+            -EPS - s.r,
+            -EPS - s.g,
+            -EPS - s.b,
+            s.r - 1.0 - EPS,
+            s.g - 1.0 - EPS,
+            s.b - 1.0 - EPS,
+        ]
+    }
+
+    /// No chroma strictly between two infeasible points fits: some edge's
+    /// violation, known to be at least `vm` and `vh` at the ends, stays above
+    /// the chord bound over an interval `width` wide.
+    #[inline(always)]
+    fn empty_between(vm: &[f64; 6], vh: &[f64; 6], width: f64) -> bool {
+        let bend = (CERT_CURVATURE * (width * width)) / 8.0;
+        let mut any = false;
+        for e in 0..6 {
+            any |= (vm[e] > bend) & (vh[e] > bend);
+        }
+        any
+    }
+
+    /// Newton step from an anchor to the crossing of the edge expected to
+    /// bind: the nearest edge rising above it when it fits, else the edge it
+    /// violates most. Returns (edge, chroma).
+    #[inline(always)]
+    fn newton(a: &Anchor) -> (usize, f64) {
+        if a.fits {
+            let mut r = f64::INFINITY;
+            let mut best = 0;
+            for e in 0..6 {
+                let (v, dv) = a.edge(e);
+                let root = a.c - v / dv;
+                let better = dv > 0.0 && root < r;
+                r = if better { root } else { r };
+                best = if better { e } else { best };
+            }
+            (best, r)
+        } else {
+            let e = a.active();
+            let (v, dv) = a.edge(e);
+            (e, a.c - v / dv)
+        }
+    }
+
+    /// Predicted decisions for the remaining levels: the binary digits of
+    /// `c`'s position in the bracket, level 0 in bit 0. `inv_w` is the
+    /// bracket width's reciprocal; the estimate need not be exact.
+    #[inline(always)]
+    fn pred_bits(c: f64, lo_c: f64, inv_w: f64, rem: usize) -> u32 {
+        let x = (c - lo_c) * inv_w;
+        let digits = ((x * f64::from(1u32 << rem)) as u32).min((1u32 << rem) - 1);
+        digits.reverse_bits() >> (32 - rem)
+    }
+
+    #[inline(always)]
+    fn chain_init(
+        cs: &mut [f64; MAX_REM + 1],
+        qlos: &mut [f64; MAX_REM + 1],
+        qhis: &mut [f64; MAX_REM + 1],
+        lo_c: f64,
+        hi_c: f64,
+    ) {
+        cs[0] = (lo_c + hi_c) / 2.0;
+        qlos[0] = lo_c;
+        qhis[0] = hi_c;
+    }
+
+    /// Midpoints and brackets of the predicted path from level `from`, whose
+    /// entries must already hold. `m.mul_add(0.5, other * 0.5)` rounds like
+    /// `(m + other) / 2.0`.
+    #[inline(always)]
+    fn chain(
+        cs: &mut [f64; MAX_REM + 1],
+        qlos: &mut [f64; MAX_REM + 1],
+        qhis: &mut [f64; MAX_REM + 1],
+        pred: u32,
+        from: usize,
+        rem: usize,
+    ) {
+        let (mut qlo, mut qhi, mut m) = (qlos[from], qhis[from], cs[from]);
+        for i in from..rem {
+            cs[i] = m;
+            qlos[i] = qlo;
+            qhis[i] = qhi;
+            let f = (pred >> i) & 1 == 1;
+            let other = if f { qhi } else { qlo };
+            qlo = if f { m } else { qlo };
+            qhi = if f { qhi } else { m };
+            m = m.mul_add(0.5, other * 0.5);
+        }
+        cs[rem] = m;
+        qlos[rem] = qlo;
+        qhis[rem] = qhi;
+    }
+
+    /// Chroma interval on which `a` certifies every channel inside the band.
+    /// Empty (lo > hi) when some channel can't be certified anywhere.
+    #[inline(always)]
+    #[allow(
+        clippy::neg_cmp_op_on_partial_ord,
+        reason = "a NaN discriminant must count as bad"
+    )]
+    fn fit_interval(&self, a: &Anchor) -> (f64, f64) {
+        let (mut lo, mut hi) = (f64::NEG_INFINITY, f64::INFINITY);
+        let mut bad = false;
+        let k2 = CERT_CURVATURE / 2.0;
+        for j in 0..3 {
+            let (ch, d1) = (a.ch[j], a.d1[j]);
+            // Below: ch + d1·d − k2·d² − slack ≥ −EPS.
+            let disc = d1 * d1 + 4.0 * k2 * (ch + EPS - CERT_SLACK);
+            bad |= !(disc >= 0.0);
+            let r = disc.sqrt();
+            lo = lo.max(a.c + (d1 - r) / (2.0 * k2));
+            hi = hi.min(a.c + (d1 + r) / (2.0 * k2));
+            // Above: ch + d1·d + k2·d² + slack ≤ 1 + EPS.
+            let disc = d1 * d1 - 4.0 * k2 * (ch - 1.0 - EPS + CERT_SLACK);
+            bad |= !(disc >= 0.0);
+            let r = disc.sqrt();
+            lo = lo.max(a.c + (-d1 - r) / (2.0 * k2));
+            hi = hi.min(a.c + (-d1 + r) / (2.0 * k2));
+        }
+        if bad {
+            return (f64::INFINITY, f64::NEG_INFINITY);
+        }
+        (lo, hi)
+    }
+
+    /// Open chroma interval on which `a` certifies edge `e` violated.
+    #[inline(always)]
+    #[allow(
+        clippy::neg_cmp_op_on_partial_ord,
+        reason = "a NaN discriminant must give an empty interval"
+    )]
+    fn nofit_interval(&self, a: &Anchor, e: usize) -> (f64, f64) {
+        let (v, dv) = a.edge(e);
+        let k2 = CERT_CURVATURE / 2.0;
+        let disc = dv * dv + 4.0 * k2 * (v - CERT_SLACK);
+        if !(disc > 0.0) {
+            return (f64::INFINITY, f64::NEG_INFINITY);
+        }
+        let r = disc.sqrt();
+        (a.c + (dv - r) / (2.0 * k2), a.c + (dv + r) / (2.0 * k2))
+    }
+
+    /// Lower bound of edge `e`'s violation at chroma `m`, certified from `a`.
+    #[inline(always)]
+    fn edge_lb(&self, a: &Anchor, e: usize, m: f64) -> f64 {
+        let d = m - a.c;
+        let err = (CERT_CURVATURE / 2.0) * (d * d) + CERT_SLACK;
+        let j = e % 3;
+        let t = a.ch[j] + a.d1[j] * d;
+        if e < 3 {
+            (-EPS - t) - err
+        } else {
+            (t - 1.0 - EPS) - err
+        }
+    }
+
+    /// `bisect_serial`'s result from one exact anchor near the boundary, or
+    /// None when the path is not certifiable. The opening decides levels 0
+    /// and 1 exactly; a Hermite step between the bracket ends locates the
+    /// crossing, one sample there gives an anchor with channel slopes, and a
+    /// Taylor bound from it certifies each remaining midpoint of the
+    /// predicted path. Only undecided midpoints are solved exactly, in one
+    /// batch with the final sample. A wrong prediction re-anchors on the
+    /// sample that exposed it and predicts again from there.
+    #[inline(always)]
+    fn bisect_certified(&self, o: &Opening, tol: f64) -> Option<Sample> {
+        /// A first anchor further than this from its Newton root is refined by a second sample.
+        const REFINE_TAU: f64 = 2e-6;
+        const OPEN_LEVELS: usize = 2;
+
+        let Opening {
+            top,
+            q4,
+            q2,
+            q6,
+            gray,
+        } = *o;
+
+        // Levels 0 and 1 exactly. Their island checks are deferred past the
+        // next sample so their own samples overlap it; the bracket below
+        // assumes no island, and a found island returns directly.
+        let lo0 = UNSAMPLED_LO;
+        let lo1 = select(q4.fits, &q4, &lo0);
+        let hi1 = select(q4.fits, &top, &q4);
+        let m1 = select(q4.fits, &q6, &q2);
+        let lo = select(m1.fits, &m1, &lo1);
+        let hi = select(m1.fits, &hi1, &m1);
+        let check0 = !q4.fits && !self.no_island(&q4, &top);
+        let check1 = !m1.fits && !self.no_island(&m1, &hi1);
+        // Certificates need the solved L analytic and unclamped, but only
+        // on the bracket the exact levels left.
+        if !self.certifiable(hi.c) {
+            return None;
+        }
+
+        // Locate the crossing between the bracket ends.
+        let lo_s = select(lo.l.is_nan(), &gray, &lo);
+        let a_lo = self.anchor(&lo_s);
+        let a_hi = self.anchor(&hi);
+        let mut c1 = hermite_root(&a_lo, &a_hi, a_hi.active());
+        if !(c1 > lo.c && c1 < hi.c) {
+            c1 = (lo.c + hi.c) / 2.0;
+        }
+        let s1 = self.sample(c1);
+        // Speculative path from c1 while s1 is in flight; later estimates
+        // only redo the levels below the first digit that changes.
+        let mut cs = [0.0f64; MAX_REM + 1];
+        let mut qlos = [0.0f64; MAX_REM + 1];
+        let mut qhis = [0.0f64; MAX_REM + 1];
+        let rem0 = OUTER_ITER as usize - OPEN_LEVELS;
+        let mut inv_w = 1.0 / (hi.c - lo.c);
+        Self::chain_init(&mut cs, &mut qlos, &mut qhis, lo.c, hi.c);
+        let mut chain_pred = Self::pred_bits(c1, lo.c, inv_w, rem0);
+        Self::chain(&mut cs, &mut qlos, &mut qhis, chain_pred, 0, rem0);
+        let mut have_chain = true;
+
+        if check0 {
+            if let Some(island) = self.search_inside(&q4, &top, tol, Some(&q6)) {
+                return Some(self.sample((island.lo + island.hi.c) / 2.0));
+            }
+        }
+        if check1 {
+            if let Some(island) = self.search_inside(&m1, &hi1, tol, None) {
+                return Some(self.sample((island.lo + island.hi.c) / 2.0));
+            }
+        }
+
+        let mut a = self.anchor(&s1);
+        let (mut estar, mut c2) = Self::newton(&a);
+        if !(c2 > lo.c && c2 < hi.c) {
+            c2 = c1;
+        }
+        if (c2 - c1).abs() > REFINE_TAU {
+            let s2 = self.sample(c2);
+            let p2 = Self::pred_bits(c2, lo.c, inv_w, rem0);
+            let from = ((chain_pred ^ p2).trailing_zeros() as usize).min(rem0);
+            if from < rem0 {
+                Self::chain(&mut cs, &mut qlos, &mut qhis, p2, from, rem0);
+            }
+            chain_pred = p2;
+            let a2 = self.anchor(&s2);
+            let (e2, c3) = Self::newton(&a2);
+            if c3 > lo.c && c3 < hi.c {
+                a = a2;
+                estar = e2;
+                c2 = c3;
+            }
+        }
+
+        let (mut lo_c, mut hi_c) = (lo.c, hi.c);
+        let mut hi_exact: Option<Sample> = Some(hi);
+        let mut done = OPEN_LEVELS;
+        let k8 = CERT_CURVATURE / 8.0;
+        'cycle: loop {
+            let rem = OUTER_ITER as usize - done;
+            let (jstar, sgn, off) = if estar < 3 {
+                (estar, -1.0, -EPS)
+            } else {
+                (estar - 3, 1.0, -1.0 - EPS)
+            };
+            let (hi_v, hi_cert) = match hi_exact {
+                Some(h) => (sgn * [h.r, h.g, h.b][jstar] + off, false),
+                None => {
+                    let lb = self.edge_lb(&a, estar, hi_c);
+                    (lb, lb > 0.0)
+                }
+            };
+
+            // Predicted path: the decisions are the binary digits of c2's
+            // position in the bracket, so the midpoints need one FMA each
+            // (bit-identical to serial's (lo + hi) / 2).
+            let pred = Self::pred_bits(c2, lo_c, inv_w, rem);
+            let from = if have_chain {
+                ((chain_pred ^ pred).trailing_zeros() as usize).min(rem)
+            } else {
+                Self::chain_init(&mut cs, &mut qlos, &mut qhis, lo_c, hi_c);
+                0
+            };
+            if from < rem {
+                Self::chain(&mut cs, &mut qlos, &mut qhis, pred, from, rem);
+            }
+            chain_pred = pred;
+            debug_assert_eq!(cs[rem], (qlos[rem] + qhis[rem]) / 2.0);
+            let mut ls = [0.0f64; MAX_REM + 1];
+            ls[rem] = self.l_at(cs[rem]);
+
+            // Each certificate is a quadratic in chroma, so it holds on an
+            // interval. An infeasible level also needs its bracket's hi
+            // certified on the same edge (concavity, or the chord bound
+            // against the exact hi at the first one) unless it is too narrow
+            // to hold an island; a carry through the fit levels between two
+            // infeasible ones finds the ones whose hi is uncertified.
+            let (f_lo, f_hi) = self.fit_interval(&a);
+            let (n_lo, n_hi) = self.nofit_interval(&a, estar);
+            // Fixed trip count so the loop unrolls; entries past `rem` are
+            // stale and masked off below.
+            let (mut inf, mut inn, mut small) = (0u32, 0u32, 0u32);
+            for i in 0..MAX_REM {
+                let m = cs[i];
+                inf |= u32::from((m >= f_lo) & (m <= f_hi)) << i;
+                inn |= u32::from((m > n_lo) & (m < n_hi)) << i;
+                small |= u32::from(qhis[i] - m < MIN_WIDTH) << i;
+            }
+            let all = (1u32 << rem) - 1;
+            inf &= all;
+            inn &= all;
+            small &= all;
+            let f_mask = pred & all;
+            let n_mask = !pred & all;
+            let above = ((n_mask & !inn) << 1) | u32::from(!hi_cert);
+            let blocked =
+                ((f_mask.wrapping_add(above & f_mask)) & !f_mask & all) | (above & n_mask);
+            let mut settled = (f_mask & inf) | (n_mask & inn & (small | !blocked));
+            let i0 = pred.trailing_ones() as usize;
+            if i0 < rem && !hi_cert {
+                let m0 = cs[i0];
+                let in_n = (inn >> i0) & 1 == 1;
+                let width = hi_c - m0;
+                let bend = k8 * (width * width);
+                let nofit_lb = self.edge_lb(&a, estar, m0);
+                let ok = in_n & ((width < MIN_WIDTH) | ((nofit_lb > bend) & (hi_v > bend)));
+                settled |= u32::from(ok) << i0;
+            }
+
+            // Solve the undecided midpoints and the final one together.
+            let unsettled = !settled & all;
+            let mut bits = unsettled;
+            while bits != 0 {
+                let i = bits.trailing_zeros() as usize;
+                ls[i] = self.l_at(cs[i]);
+                bits &= bits - 1;
+            }
+
+            // Check the exact levels in order; everything else is certified.
+            let mut bits = unsettled;
+            while bits != 0 {
+                let i = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let s = self.finish(cs[i], ls[i]);
+                let f = (pred >> i) & 1 == 1;
+                // The bracket at this level, from the decisions before it.
+                let below = (1u32 << i) - 1;
+                let nb = !pred & below;
+                let lo_i = qlos[i];
+                let hi_i = qhis[i];
+                let hi_i_exact = if nb == 0 {
+                    hi_exact
+                } else {
+                    let j = 31 - nb.leading_zeros() as usize;
+                    let exact = (unsettled >> j) & 1 == 1;
+                    if exact {
+                        Some(self.finish(cs[j], ls[j]))
+                    } else {
+                        None
+                    }
+                };
+                debug_assert_eq!(s.c, (lo_i + hi_i) / 2.0);
+                if !s.fits {
+                    let width = hi_i - s.c;
+                    if width >= MIN_WIDTH {
+                        let h = match hi_i_exact {
+                            Some(h) => Some(h),
+                            None => {
+                                let lb = self.certify(&a, hi_i);
+                                if Self::empty_between(&Self::violations(&s), &lb, width) {
+                                    None
+                                } else {
+                                    Some(self.sample(hi_i))
+                                }
+                            }
+                        };
+                        if let Some(h) = h {
+                            if !self.no_island(&s, &h) {
+                                if let Some(island) = self.search_inside(&s, &h, tol, None) {
+                                    return Some(self.sample((island.lo + island.hi.c) / 2.0));
+                                }
+                            }
+                        }
+                    }
+                }
+                if s.fits != f {
+                    // Wrong prediction: take this level exactly and predict again from here.
+                    lo_c = if s.fits { s.c } else { lo_i };
+                    hi_c = if s.fits { hi_i } else { s.c };
+                    hi_exact = if s.fits { hi_i_exact } else { Some(s) };
+                    inv_w = 1.0 / (hi_c - lo_c);
+                    done += i + 1;
+                    have_chain = false;
+                    if done == OUTER_ITER as usize {
+                        return Some(self.sample((lo_c + hi_c) / 2.0));
+                    }
+                    a = self.anchor(&s);
+                    let (e, c) = Self::newton(&a);
+                    estar = e;
+                    c2 = if c > lo_c && c < hi_c {
+                        c
+                    } else {
+                        (lo_c + hi_c) / 2.0
+                    };
+                    continue 'cycle;
+                }
+            }
+            return Some(self.finish(cs[rem], ls[rem]));
+        }
+    }
+}
+
 /// `a` if `cond`, else `b`. Conditional moves, not a branch: the decision
 /// is unpredictable, and a mispredict would discard the next round's
 /// samples in flight.
@@ -576,22 +1202,43 @@ mod tests {
             cases.push((0.5 + 99.0 * rand(), 0.4 * rand(), 360.0 * rand()));
         }
 
+        let mut certified_count = 0;
         for (tone, chroma, hue) in cases {
             let path = Path::new(cie_lstar_to_y(tone), hue);
             let top = path.sample(chroma);
             if top.fits {
                 continue;
             }
+            let opening = Opening {
+                top,
+                q4: path.sample((0.0 + chroma) / 2.0),
+                q2: path.sample((0.0 + (0.0 + chroma) / 2.0) / 2.0),
+                q6: path.sample(((0.0 + chroma) / 2.0 + chroma) / 2.0),
+                gray: path.sample(0.0),
+            };
             let tol = chroma / f64::from(1u32 << OUTER_ITER);
             let serial = path.bisect_serial(top, tol);
-            let predicted = path.bisect_predicted(top, tol);
+            let predicted = path.bisect_predicted(&opening, tol);
             assert_eq!(
                 bits(&serial),
                 bits(&predicted),
-                "tone {tone} chroma {chroma} hue {hue}"
+                "predicted: tone {tone} chroma {chroma} hue {hue}"
             );
+            if let Some(certified) = path.bisect_certified(&opening, tol) {
+                assert_eq!(
+                    bits(&serial),
+                    bits(&certified),
+                    "certified: tone {tone} chroma {chroma} hue {hue}"
+                );
+                certified_count += 1;
+            }
+            assert_eq!(bits(&serial), bits(&path.bisect(&opening)));
             checked += 1;
         }
         assert!(checked > 5000, "only {checked} mapped colors checked");
+        assert!(
+            certified_count * 10 > checked * 9,
+            "certified path covered only {certified_count} of {checked}"
+        );
     }
 }
