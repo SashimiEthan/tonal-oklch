@@ -63,6 +63,10 @@ const EPS: f64 = 1e-4;
 const CURVATURE: f64 = 32.0;
 /// Chroma intervals narrower than this are not searched for islands.
 const MIN_WIDTH: f64 = 1e-6;
+/// No sRGB color has chroma this high (the gamut peaks at 0.3226, magenta
+/// corner, EPS included), so no island starts above it. Also the only stop for
+/// absurd requests (≳ 1e150), whose NaN samples `provably_empty` cannot rule out.
+const MAX_FEASIBLE_CHROMA: f64 = 0.5;
 /// Bisection steps; the final bracket is `max_chroma / 2^OUTER_ITER` wide.
 const OUTER_ITER: u32 = 25;
 /// Levels left after the two exact opening levels.
@@ -95,6 +99,11 @@ const UNSAMPLED_LO: Sample = Sample {
 struct Bracket {
     lo: f64,
     hi: Sample,
+}
+
+/// Debug-assert equality that a NaN request (which propagates to every chroma) does not trip.
+fn same_c(a: f64, b: f64) -> bool {
+    a == b || (a.is_nan() && b.is_nan())
 }
 
 /// True when no chroma strictly between a and b (both infeasible) can fit: some
@@ -263,7 +272,7 @@ impl Path {
     fn no_island(&self, a: &Sample, b: &Sample) -> bool {
         let width = b.c - a.c;
         // A NaN width must also stop the recursion.
-        width.is_nan() | (width < MIN_WIDTH) | provably_empty(a, b)
+        (a.c >= MAX_FEASIBLE_CHROMA) | width.is_nan() | (width < MIN_WIDTH) | provably_empty(a, b)
     }
 
     /// Bracket around the highest feasible chroma strictly inside (a, b), both infeasible, or None.
@@ -290,7 +299,7 @@ impl Path {
             Some(m) => *m,
             None => self.sample((a.c + b.c) / 2.0),
         };
-        debug_assert_eq!(m.c, (a.c + b.c) / 2.0);
+        debug_assert!(same_c(m.c, (a.c + b.c) / 2.0));
         if m.fits {
             return Some(self.top_between(m.c, *b, tol));
         }
@@ -359,6 +368,16 @@ fn map_chroma(target_y: f64, hue: f64, max_chroma: f64) -> Sample {
     if top.fits {
         return top;
     }
+    if target_y.is_nan() {
+        // Every sample is NaN: nothing fits and nothing is provably empty, so the
+        // island search would walk ~2^17 sub-intervals (20 ms) to end where plain
+        // bisection ends.
+        let mut c = max_chroma;
+        for _ in 0..=OUTER_ITER {
+            c = (0.0 + c) / 2.0;
+        }
+        return path.sample(c);
+    }
     let opening = Opening {
         top,
         q4: path.finish(c4, l4),
@@ -383,10 +402,10 @@ impl Path {
     #[inline(always)]
     fn bisect(&self, o: &Opening) -> Sample {
         debug_assert!(!o.top.fits);
-        debug_assert_eq!(o.q4.c, (0.0 + o.top.c) / 2.0);
-        debug_assert_eq!(o.q2.c, (0.0 + o.q4.c) / 2.0);
-        debug_assert_eq!(o.q6.c, (o.q4.c + o.top.c) / 2.0);
-        debug_assert_eq!(o.gray.c, 0.0);
+        debug_assert!(same_c(o.q4.c, (0.0 + o.top.c) / 2.0));
+        debug_assert!(same_c(o.q2.c, (0.0 + o.q4.c) / 2.0));
+        debug_assert!(same_c(o.q6.c, (o.q4.c + o.top.c) / 2.0));
+        debug_assert!(same_c(o.gray.c, 0.0));
         let tol = o.top.c / f64::from(1u32 << OUTER_ITER);
         match self.bisect_certified(o, tol) {
             Some(s) => s,
@@ -480,7 +499,7 @@ impl Path {
             hi = select(next.fits, &hi1, &next);
         }
         if lo.l.is_nan() {
-            lo = self.sample(0.0);
+            lo = o.gray;
         }
 
         let mut done = 2 * PREDICT_ROUNDS;
@@ -556,7 +575,7 @@ impl Path {
             };
             for j in 0..steps {
                 let m = self.finish(cs[j], ls[j]);
-                debug_assert_eq!(m.c, (lo.c + hi.c) / 2.0);
+                debug_assert!(same_c(m.c, (lo.c + hi.c) / 2.0));
                 if m.fits {
                     third = lo;
                     lo = m;
@@ -1048,7 +1067,7 @@ impl Path {
                 Self::chain(&mut cs, &mut qlos, &mut qhis, pred, from, rem);
             }
             chain_pred = pred;
-            debug_assert_eq!(cs[rem], (qlos[rem] + qhis[rem]) / 2.0);
+            debug_assert!(same_c(cs[rem], (qlos[rem] + qhis[rem]) / 2.0));
             let mut ls = [0.0f64; MAX_REM + 1];
             ls[rem] = self.l_at(cs[rem]);
 
@@ -1122,7 +1141,7 @@ impl Path {
                         None
                     }
                 };
-                debug_assert_eq!(s.c, (lo_i + hi_i) / 2.0);
+                debug_assert!(same_c(s.c, (lo_i + hi_i) / 2.0));
                 if !s.fits {
                     let width = hi_i - s.c;
                     if width >= MIN_WIDTH {
@@ -1193,21 +1212,79 @@ mod tests {
     use super::*;
     use crate::luminance::cie_lstar_to_y;
 
-    fn bits(s: &Sample) -> ([u64; 5], bool) {
-        (
-            [
-                s.c.to_bits(),
-                s.l.to_bits(),
-                s.r.to_bits(),
-                s.g.to_bits(),
-                s.b.to_bits(),
-            ],
-            s.fits,
-        )
+    /// Bit-for-bit equality, with every NaN counting as the same NaN.
+    fn same_sample(a: &Sample, b: &Sample) -> bool {
+        let same = |x: f64, y: f64| x.to_bits() == y.to_bits() || (x.is_nan() && y.is_nan());
+        same(a.c, b.c)
+            && same(a.l, b.l)
+            && same(a.r, b.r)
+            && same(a.g, b.g)
+            && same(a.b, b.b)
+            && a.fits == b.fits
+    }
+
+    fn describe(s: &Sample) -> String {
+        format!("c {:e} l {:e} fits {}", s.c, s.l, s.fits)
+    }
+
+    /// Checks every fast path against `bisect_serial` for one request. None
+    /// when the request fits as is; otherwise whether the certified path took it.
+    fn check_against_serial(target_y: f64, hue: f64, chroma: f64) -> Option<bool> {
+        let path = Path::new(target_y, hue);
+        let top = path.sample(chroma);
+        if top.fits {
+            assert!(same_sample(&top, &map_chroma(target_y, hue, chroma)));
+            return None;
+        }
+        let c4 = (0.0 + chroma) / 2.0;
+        let opening = Opening {
+            top,
+            q4: path.sample(c4),
+            q2: path.sample((0.0 + c4) / 2.0),
+            q6: path.sample((c4 + chroma) / 2.0),
+            gray: path.sample(0.0),
+        };
+        let tol = chroma / f64::from(1u32 << OUTER_ITER);
+        let serial = path.bisect_serial(top, tol);
+        let label = |what: &str, got: &Sample| {
+            format!(
+                "{what}: target_y {target_y:e} hue {hue} chroma {chroma:e}: serial {} but got {}",
+                describe(&serial),
+                describe(got)
+            )
+        };
+
+        let predicted = path.bisect_predicted(&opening, tol);
+        assert!(
+            same_sample(&serial, &predicted),
+            "{}",
+            label("predicted", &predicted)
+        );
+        let certified = path.bisect_certified(&opening, tol);
+        if let Some(certified) = &certified {
+            assert!(
+                same_sample(&serial, certified),
+                "{}",
+                label("certified", certified)
+            );
+        }
+        let dispatched = path.bisect(&opening);
+        assert!(
+            same_sample(&serial, &dispatched),
+            "{}",
+            label("bisect", &dispatched)
+        );
+        let mapped = map_chroma(target_y, hue, chroma);
+        assert!(
+            same_sample(&serial, &mapped),
+            "{}",
+            label("map_chroma", &mapped)
+        );
+        Some(certified.is_some())
     }
 
     #[test]
-    fn predicted_bisection_matches_serial() {
+    fn fast_paths_match_serial_on_the_design_domain() {
         let mut hues: Vec<f64> = (0..360).step_by(3).map(f64::from).collect();
         // The hues where the feasible set splits into islands.
         hues.extend((2620..=2660).map(|h| f64::from(h) / 10.0));
@@ -1216,7 +1293,6 @@ mod tests {
         ];
         let chromas = [0.02, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.37, 0.4];
 
-        let mut checked = 0;
         let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
         let mut rand = move || {
             seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
@@ -1234,43 +1310,89 @@ mod tests {
             cases.push((0.5 + 99.0 * rand(), 0.4 * rand(), 360.0 * rand()));
         }
 
+        let mut checked = 0;
         let mut certified_count = 0;
         for (tone, chroma, hue) in cases {
-            let path = Path::new(cie_lstar_to_y(tone), hue);
-            let top = path.sample(chroma);
-            if top.fits {
-                continue;
+            if let Some(certified) = check_against_serial(cie_lstar_to_y(tone), hue, chroma) {
+                checked += 1;
+                certified_count += usize::from(certified);
             }
-            let opening = Opening {
-                top,
-                q4: path.sample((0.0 + chroma) / 2.0),
-                q2: path.sample((0.0 + (0.0 + chroma) / 2.0) / 2.0),
-                q6: path.sample(((0.0 + chroma) / 2.0 + chroma) / 2.0),
-                gray: path.sample(0.0),
-            };
-            let tol = chroma / f64::from(1u32 << OUTER_ITER);
-            let serial = path.bisect_serial(top, tol);
-            let predicted = path.bisect_predicted(&opening, tol);
-            assert_eq!(
-                bits(&serial),
-                bits(&predicted),
-                "predicted: tone {tone} chroma {chroma} hue {hue}"
-            );
-            if let Some(certified) = path.bisect_certified(&opening, tol) {
-                assert_eq!(
-                    bits(&serial),
-                    bits(&certified),
-                    "certified: tone {tone} chroma {chroma} hue {hue}"
-                );
-                certified_count += 1;
-            }
-            assert_eq!(bits(&serial), bits(&path.bisect(&opening)));
-            checked += 1;
         }
         assert!(checked > 5000, "only {checked} mapped colors checked");
         assert!(
             certified_count * 10 > checked * 9,
             "certified path covered only {certified_count} of {checked}"
         );
+    }
+
+    #[test]
+    fn fast_paths_match_serial_on_extreme_and_degenerate_requests() {
+        let mut seed: u64 = 0x1234_5678_9abc_def1;
+        let mut rand = move || {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut cases: Vec<(f64, f64, f64)> = Vec::new();
+        for _ in 0..20_000 {
+            let u = rand();
+            // Tones log-spread toward both ends, where L approaches its clamps.
+            let tone = if u < 0.25 {
+                10f64.powf(-6.0 + 6.0 * rand())
+            } else if u < 0.5 {
+                100.0 - 10f64.powf(-6.0 + 6.0 * rand())
+            } else {
+                100.0 * rand()
+            };
+            let v = rand();
+            // Above the certified path's 0.5 limit, negative, and far past the gamut.
+            let chroma = if v < 0.6 {
+                0.6 * rand()
+            } else if v < 0.8 {
+                -0.5 * rand()
+            } else {
+                2.0 * rand()
+            };
+            let hue = if rand() < 0.1 {
+                262.0 + 3.0 * rand()
+            } else {
+                360.0 * rand()
+            };
+            cases.push((cie_lstar_to_y(tone), hue, chroma));
+        }
+        let specials = [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            -0.0,
+            0.0,
+            1e-300,
+            -1e-300,
+            1e10,
+            1e300,
+            f64::MAX,
+        ];
+        for &chroma in &specials {
+            for &tone in &[1e-9, 0.001, 0.5, 50.0, 99.0, 99.999_999] {
+                for &hue in &[0.0, 120.0, 264.0, f64::NAN, f64::INFINITY] {
+                    cases.push((cie_lstar_to_y(tone), hue, chroma));
+                }
+            }
+        }
+        // Raw targets reachable through `gamut_map_with_tone_preservation`.
+        for &y in &[f64::INFINITY, f64::NEG_INFINITY, -0.1, 0.0, 1.0, 1.5, 1e300] {
+            for &chroma in &[-0.2, 0.0, 0.4, 1e300] {
+                cases.push((y, 264.0, chroma));
+            }
+        }
+        // A NaN target makes the serial search exhaustive (tens of ms each), so only a few.
+        for &chroma in &[0.4, 1e300, f64::NAN] {
+            cases.push((f64::NAN, 264.0, chroma));
+        }
+
+        let mut checked = 0;
+        for (y, hue, chroma) in cases {
+            checked += usize::from(check_against_serial(y, hue, chroma).is_some());
+        }
+        assert!(checked > 15_000, "only {checked} mapped requests checked");
     }
 }

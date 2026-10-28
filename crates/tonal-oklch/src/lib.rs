@@ -3,8 +3,9 @@
 //! have identical WCAG contrast ratios against any background, regardless of
 //! hue or chroma.
 //!
-//! This is a port of the `tonal-oklch` npm package and produces the same
-//! output for the same input.
+//! This is a port of the `tonal-oklch` npm package. It gives the same 8-bit
+//! colors: every hex in the package's 22,185-color golden fixture matches.
+//! Float channels agree to within 2e-14, not bit for bit.
 //!
 //! ```
 //! use tonal_oklch::{TonalOklch, tonal_oklch_to_result};

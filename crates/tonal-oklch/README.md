@@ -2,7 +2,7 @@
 
 A hybrid color space pairing **OKLCh's** perceptual hue and chroma with **CIE L\*'s** guaranteed WCAG contrast. Colors at the same **tone** have identical WCAG contrast ratios against any background, regardless of hue or chroma.
 
-This crate is a dependency-free port of the [`tonal-oklch`](https://www.npmjs.com/package/tonal-oklch) npm package (0.2.0). It produces the same output for the same input: every one of the 22,185 colors in the package's golden fixture matches byte for byte, and the package's behavioral test suite is ported to `tests/behavior.rs`.
+This crate is a dependency-free port of the [`tonal-oklch`](https://www.npmjs.com/package/tonal-oklch) npm package (0.2.0). It gives the same 8-bit colors: every one of the 22,185 hexes in the package's golden fixture matches, float channels agree to within 2e-14, and the package's behavioral test suite is ported to `tests/behavior.rs`.
 
 ## Install
 
