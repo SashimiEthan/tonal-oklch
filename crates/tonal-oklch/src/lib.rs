@@ -5,7 +5,7 @@
 //!
 //! This is a port of the `tonal-oklch` npm package. It gives the same 8-bit
 //! colors: every hex in the package's 22,185-color golden fixture matches.
-//! Float channels agree to within 2e-14, not bit for bit.
+//! Float sRGB channels agree to within 1e-13, not bit for bit.
 //!
 //! ```
 //! use tonal_oklch::{TonalOklch, tonal_oklch_to_result};

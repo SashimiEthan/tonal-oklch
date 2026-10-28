@@ -51,4 +51,4 @@ In the result layout, `r, g, b` are the exact-tone float channels (0–1), `r8, 
 
 ## Parity
 
-`tests/parity.mjs` checks the build against the repository's golden fixture (all 22,185 hexes match) and against the JS build (identical `rgb8`, `hex` and `tone`; float channels agree to within 2e-14).
+`tests/parity.mjs` checks the build against the repository's golden fixture (all 22,185 hexes match) and against the JS build (identical `rgb8`, `hex` and `tone`; float sRGB channels agree to within 1e-13).
