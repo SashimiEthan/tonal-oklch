@@ -619,32 +619,51 @@ impl Anchor {
     }
 }
 
-/// Root of the cubic Hermite interpolant of edge `e` between a feasible
-/// `a` and an infeasible `b`; NaN or out of range when the model misbehaves.
-#[inline(always)]
-fn hermite_root(a: &Anchor, b: &Anchor, e: usize) -> f64 {
-    let (va, da) = a.edge(e);
-    let (vb, db) = b.edge(e);
-    let h = b.c - a.c;
-    let (da, db) = (da * h, db * h);
-    let mut s = va / (va - vb);
-    for _ in 0..3 {
-        let s2 = s * s;
-        let s3 = s2 * s;
-        let hv = (2.0 * s3 - 3.0 * s2 + 1.0) * va
-            + (s3 - 2.0 * s2 + s) * da
-            + (3.0 * s2 - 2.0 * s3) * vb
-            + (s3 - s2) * db;
-        let hd = (6.0 * s2 - 6.0 * s) * va
-            + (3.0 * s2 - 4.0 * s + 1.0) * da
-            + (6.0 * s - 6.0 * s2) * vb
-            + (3.0 * s2 - 2.0 * s) * db;
-        s = (s - hv / hd).clamp(0.0, 1.0);
-    }
-    a.c + s * h
-}
-
 impl Path {
+    /// The t = c/L in (t_lo, t_hi) where edge `e` is crossed, or NaN when
+    /// the solve lands outside. In t every channel is L³·Q(t) and Y is
+    /// L³·W_SUM·P(t), so "channel = edge" is the cubic
+    /// gamma·Q(t) − edge·P(t) = 0, independent of L.
+    #[inline(always)]
+    fn edge_crossing(&self, e: usize, t_lo: f64, t_hi: f64) -> f64 {
+        let j = e % 3;
+        let ev = if e < 3 { -EPS } else { 1.0 + EPS };
+        let r = LMS2RGB[j];
+        let (mut r0, mut r1, mut r2, mut r3) = (0.0, 0.0, 0.0, 0.0);
+        for (&ri, &k) in r.iter().zip(&self.k) {
+            r0 += ri;
+            r1 += ri * k;
+            r2 += ri * (k * k);
+            r3 += ri * (k * k * k);
+        }
+        let y = self.gamma;
+        let f0 = y * r0 - ev;
+        let f1 = 3.0 * y * r1 - ev * self.b;
+        let f2 = 3.0 * y * r2 - ev * self.cc;
+        let f3 = y * r3 - ev * self.d;
+        let f = |t: f64| ((f3 * t + f2) * t + f1) * t + f0;
+        let fp = |t: f64| (3.0 * f3 * t + 2.0 * f2) * t + f1;
+        // Two Halley steps from the secant start; the anchor it yields is
+        // exact wherever it lands, so a slow case only costs prediction quality.
+        let (flo, fhi) = (f(t_lo), f(t_hi));
+        let mut t = t_lo + (t_hi - t_lo) * (flo / (flo - fhi));
+        for _ in 0..2 {
+            let v = f(t);
+            let d1 = fp(t);
+            let d2 = 6.0 * f3 * t + 2.0 * f2;
+            t -= (2.0 * v * d1) / (2.0 * d1 * d1 - v * d2);
+        }
+        if t > t_lo && t < t_hi { t } else { f64::NAN }
+    }
+
+    /// Chroma and lightness of the path point with t = c/L.
+    #[inline(always)]
+    fn c_of_t(&self, t: f64) -> (f64, f64) {
+        let p = 1.0 + t * (self.b + t * (self.cc + t * self.d));
+        let l = (self.gamma / p).cbrt();
+        (t * l, l)
+    }
+
     /// Whether certificates are valid on [0, top]: the solved L is a single
     /// analytic branch (q < 0 keeps the largest root simple), never clamped,
     /// and the curvature bound was surveyed up to this chroma.
@@ -892,9 +911,9 @@ impl Path {
 
     /// `bisect_serial`'s result from one exact anchor near the boundary, or
     /// None when the path is not certifiable. The opening decides levels 0
-    /// and 1 exactly; a Hermite step between the bracket ends locates the
-    /// crossing, one sample there gives an anchor with channel slopes, and a
-    /// Taylor bound from it certifies each remaining midpoint of the
+    /// and 1 exactly; the closed-form crossing of the edge `hi` violates
+    /// most, solved in t = c/L, gives an exact anchor with channel slopes,
+    /// and a Taylor bound from it certifies each remaining midpoint of the
     /// predicted path. Only undecided midpoints are solved exactly, in one
     /// batch with the final sample. A wrong prediction re-anchors on the
     /// sample that exposed it and predicts again from there.
@@ -931,13 +950,18 @@ impl Path {
 
         // Locate the crossing between the bracket ends.
         let lo_s = select(lo.l.is_nan(), &gray, &lo);
-        let a_lo = self.anchor(&lo_s);
-        let a_hi = self.anchor(&hi);
-        let mut c1 = hermite_root(&a_lo, &a_hi, a_hi.active());
-        if !(c1 > lo.c && c1 < hi.c) {
-            c1 = (lo.c + hi.c) / 2.0;
-        }
-        let s1 = self.sample(c1);
+        let t_lo = lo_s.c / lo_s.l;
+        let t_hi = hi.c / hi.l;
+        let ex = active_bound(&hi);
+        let tx = self.edge_crossing(ex, t_lo, t_hi);
+        let (cx, lx) = self.c_of_t(tx);
+        let crossed = cx > lo.c && cx < hi.c;
+        let (c1, s1) = if crossed {
+            (cx, self.finish(cx, lx))
+        } else {
+            let c = (lo.c + hi.c) / 2.0;
+            (c, self.sample(c))
+        };
         // Speculative path from c1 while s1 is in flight; later estimates
         // only redo the levels below the first digit that changes.
         let mut cs = [0.0f64; MAX_REM + 1];
@@ -962,9 +986,17 @@ impl Path {
         }
 
         let mut a = self.anchor(&s1);
-        let (mut estar, mut c2) = Self::newton(&a);
-        if !(c2 > lo.c && c2 < hi.c) {
-            c2 = c1;
+        // Newton only when the anchor is not a clean root of `ex` alone.
+        let mut other = false;
+        for k in 0..6 {
+            other |= (k != ex) & (a.edge(k).0 > 0.0);
+        }
+        let short = a.edge(ex).0.abs() > 1e-9;
+        let (mut estar, mut c2) = (ex, c1);
+        if other | short | !crossed {
+            let (e, c) = Self::newton(&a);
+            estar = e;
+            c2 = if c > lo.c && c < hi.c { c } else { c1 };
         }
         if (c2 - c1).abs() > REFINE_TAU {
             let s2 = self.sample(c2);
