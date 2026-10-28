@@ -839,7 +839,7 @@ impl Path {
 
     /// Midpoints and brackets of the predicted path from level `from`, whose
     /// entries must already hold. `m.mul_add(0.5, other * 0.5)` rounds like
-    /// `(m + other) / 2.0`.
+    /// `(m + other) / 2.0` but is a software libcall without a hardware FMA.
     #[inline(always)]
     fn chain(
         cs: &mut [f64; MAX_REM + 1],
@@ -858,7 +858,11 @@ impl Path {
             let other = if f { qhi } else { qlo };
             qlo = if f { m } else { qlo };
             qhi = if f { qhi } else { m };
-            m = m.mul_add(0.5, other * 0.5);
+            m = if cfg!(any(target_arch = "aarch64", target_feature = "fma")) {
+                m.mul_add(0.5, other * 0.5)
+            } else {
+                (m + other) / 2.0
+            };
         }
         cs[rem] = m;
         qlos[rem] = qlo;
@@ -1054,8 +1058,8 @@ impl Path {
             };
 
             // Predicted path: the decisions are the binary digits of c2's
-            // position in the bracket, so the midpoints need one FMA each
-            // (bit-identical to serial's (lo + hi) / 2).
+            // position in the bracket, so the midpoints follow by one average
+            // each (bit-identical to serial's (lo + hi) / 2).
             let pred = Self::pred_bits(c2, lo_c, inv_w, rem);
             let from = if have_chain {
                 ((chain_pred ^ pred).trailing_zeros() as usize).min(rem)
